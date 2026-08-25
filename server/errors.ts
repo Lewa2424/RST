@@ -42,6 +42,18 @@ export function handleRouteError(res: Response, err: unknown): void {
     sendError(res, err.status, err.code, err.message, err.details);
     return;
   }
+  // Duck-type: on serverless, `instanceof` can fail across bundled copies of the class.
+  if (
+    err &&
+    typeof err === 'object' &&
+    typeof (err as { status?: unknown }).status === 'number' &&
+    typeof (err as { code?: unknown }).code === 'string' &&
+    typeof (err as { message?: unknown }).message === 'string'
+  ) {
+    const e = err as { status: number; code: ErrorCode; message: string; details?: unknown };
+    sendError(res, e.status, e.code, e.message, e.details);
+    return;
+  }
   const message = err instanceof Error ? err.message : 'Внутренняя ошибка сервера';
   console.error('API error:', message);
   sendError(res, 500, 'INTERNAL', 'Не удалось выполнить операцию. Попробуйте ещё раз.');

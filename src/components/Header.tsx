@@ -71,12 +71,12 @@ export const Header: React.FC<HeaderProps> = ({
             <label className="sr-only" htmlFor="global-search">{ru.search.title}</label>
             <input
               id="global-search"
-              className="field pl-9 w-44 lg:w-64"
+              className="field !pl-9 text-sm w-52 lg:w-72"
               placeholder={ru.search.placeholder}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
             />
-            <Search className="w-4 h-4 text-[var(--muted)] absolute left-3 top-3.5" aria-hidden="true" />
+            <Search className="w-4 h-4 text-[var(--muted)] absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" aria-hidden="true" />
           </form>
           <button type="button" className="btn btn-primary" onClick={onOpenCreateRoute}>
             <Plus className="w-4 h-4" aria-hidden="true" />

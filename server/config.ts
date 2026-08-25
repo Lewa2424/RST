@@ -57,12 +57,22 @@ export const config = {
 };
 
 export function ensureAppDirs(): void {
-  const dirs = [config.importTempDir, config.backupDir];
+  const dirs: string[] = [];
   if (!config.databaseUrl) {
-    dirs.unshift(path.dirname(config.databasePath));
+    dirs.push(path.dirname(config.databasePath));
+  }
+  // On Vercel only /tmp is reliably writable; skip local import/backup dirs there.
+  if (process.env.VERCEL) {
+    dirs.push(path.join('/tmp', 'rst-imports'), path.join('/tmp', 'rst-backups'));
+  } else {
+    dirs.push(config.importTempDir, config.backupDir);
   }
   for (const dir of dirs) {
-    fs.mkdirSync(dir, { recursive: true });
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+    } catch {
+      // Non-fatal on read-only hosts
+    }
   }
 }
 

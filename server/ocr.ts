@@ -195,34 +195,28 @@ export async function parseImages(
 ): Promise<ParsePayload> {
   checkOcrRateLimit();
   const images: Array<{ buffer: Buffer; mimeType: string }> = [];
-  const tempFiles: string[] = [];
 
-  try {
-    for (const file of files) {
-      assertUploadSize(file.buffer.length);
-      const mime = detectImageMime(file.buffer);
-      if (!mime || !ALLOWED_MIME.has(mime)) {
-        throw new AppError(
-          415,
-          'UNSUPPORTED_MEDIA',
-          'Поддерживаются только JPEG, PNG и WEBP. HEIC сохраните как JPEG или введите номера вручную.',
-        );
-      }
-      const ext = mime === 'image/png' ? '.png' : mime === 'image/webp' ? '.webp' : '.jpg';
-      tempFiles.push(writeTempUpload(file.buffer, ext));
-      images.push({ buffer: file.buffer, mimeType: mime });
-    }
-
-    if (config.ocrProvider === 'none' || !config.ocrApiKey) {
+  for (const file of files) {
+    assertUploadSize(file.buffer.length);
+    const mime = detectImageMime(file.buffer);
+    if (!mime || !ALLOWED_MIME.has(mime)) {
       throw new AppError(
-        503,
-        'OCR_UNAVAILABLE',
-        'OCR не настроен. Сделайте снимок для себя и введите номера вручную.',
+        415,
+        'UNSUPPORTED_MEDIA',
+        'Поддерживаются только JPEG, PNG и WEBP. HEIC сохраните как JPEG или введите номера вручную.',
       );
     }
-
-    return await getOcrProvider().recognize(images);
-  } finally {
-    for (const file of tempFiles) safeUnlink(file);
+    // Keep images in memory — Vercel serverless FS is not a reliable temp store.
+    images.push({ buffer: file.buffer, mimeType: mime });
   }
+
+  if (config.ocrProvider === 'none' || !config.ocrApiKey) {
+    throw new AppError(
+      503,
+      'OCR_UNAVAILABLE',
+      'OCR не настроен. Сделайте снимок для себя и введите номера вручную.',
+    );
+  }
+
+  return getOcrProvider().recognize(images);
 }
