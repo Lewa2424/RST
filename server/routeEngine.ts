@@ -45,15 +45,15 @@ function placeholders(count: number): string {
   return Array.from({ length: count }, () => '?').join(',');
 }
 
-function insertDiscrepancy(params: {
+async function insertDiscrepancy(params: {
   routeId: number;
   wagonId?: number | null;
   terminalListId?: number | null;
   type: string;
   details: unknown;
   now: string;
-}): void {
-  run(
+}): Promise<void> {
+  await run(
     `INSERT INTO discrepancies (route_id, terminal_list_id, wagon_id, type, status, details_json, created_at)
      VALUES (?, ?, ?, ?, 'OPEN', ?, ?)`,
     [
@@ -71,8 +71,8 @@ function insertDiscrepancy(params: {
  * Recalculates wagon states, discrepancies and route status.
  * Must be called from an existing transaction or will open its own (better-sqlite3 SAVEPOINT).
  */
-export function reconcileRoute(routeId: number): ReconcileResult {
-  const route = queryOne<RouteRow>('SELECT * FROM routes WHERE id = ?', [routeId]);
+export async function reconcileRoute(routeId: number): Promise<ReconcileResult> {
+  const route = await queryOne<RouteRow>('SELECT * FROM routes WHERE id = ?', [routeId]);
   if (!route) throw new Error(`Маршрут ${routeId} не найден`);
 
   if (route.status === 'ARCHIVED') {
@@ -88,7 +88,7 @@ export function reconcileRoute(routeId: number): ReconcileResult {
 
   const now = nowIso();
 
-  const routeWagons = query<RouteWagonRow>(
+  const routeWagons = await query<RouteWagonRow>(
     `SELECT rw.*, w.wagon_number, w.is_checksum_valid
      FROM route_wagons rw
      JOIN wagons w ON w.id = rw.wagon_id
@@ -99,7 +99,7 @@ export function reconcileRoute(routeId: number): ReconcileResult {
 
   const wagonCount = routeWagons.length;
 
-  run(
+  await run(
     `DELETE FROM discrepancies
      WHERE route_id = ?
        AND status = 'OPEN'
@@ -114,7 +114,7 @@ export function reconcileRoute(routeId: number): ReconcileResult {
     [routeId],
   );
 
-  const confirmedLists = query<{ id: number }>(
+  const confirmedLists = await query<{ id: number }>(
     `SELECT id FROM terminal_lists WHERE route_id = ? AND status = 'CONFIRMED'`,
     [routeId],
   );
@@ -122,7 +122,7 @@ export function reconcileRoute(routeId: number): ReconcileResult {
 
   let terminalRows: TerminalRow[] = [];
   if (confirmedListIds.length > 0) {
-    terminalRows = query<TerminalRow>(
+    terminalRows = await query<TerminalRow>(
       `SELECT tlr.parsed_wagon_number, tlr.weight_kg, tl.operation_type, tl.id as terminal_list_id
        FROM terminal_list_rows tlr
        JOIN terminal_lists tl ON tl.id = tlr.terminal_list_id
@@ -146,7 +146,7 @@ export function reconcileRoute(routeId: number): ReconcileResult {
   for (const rw of routeWagons) {
     const check = validateWagonChecksum(rw.wagon_number);
     if (!check.isValid) {
-      insertDiscrepancy({
+      await insertDiscrepancy({
         routeId,
         wagonId: rw.wagon_id,
         type: 'INVALID_CHECK_DIGIT',
@@ -162,7 +162,7 @@ export function reconcileRoute(routeId: number): ReconcileResult {
     const seen = (seenInRoute.get(rw.wagon_number) ?? 0) + 1;
     seenInRoute.set(rw.wagon_number, seen);
     if (seen > 1) {
-      insertDiscrepancy({
+      await insertDiscrepancy({
         routeId,
         wagonId: rw.wagon_id,
         type: 'DUPLICATE_IN_INPUT',
@@ -171,7 +171,7 @@ export function reconcileRoute(routeId: number): ReconcileResult {
       });
     }
 
-    const conflictRoutes = query<{ id: number; display_name: string }>(
+    const conflictRoutes = await query<{ id: number; display_name: string }>(
       `SELECT r.id, r.display_name
        FROM route_wagons rw2
        JOIN routes r ON r.id = rw2.route_id
@@ -180,7 +180,7 @@ export function reconcileRoute(routeId: number): ReconcileResult {
       [rw.wagon_id, routeId],
     );
     if (conflictRoutes.length > 0) {
-      insertDiscrepancy({
+      await insertDiscrepancy({
         routeId,
         wagonId: rw.wagon_id,
         type: 'ACTIVE_ROUTE_CONFLICT',
@@ -228,7 +228,7 @@ export function reconcileRoute(routeId: number): ReconcileResult {
         terminalWeight &&
         Math.abs(rw.declared_weight_kg - terminalWeight) > weightThreshold
       ) {
-        insertDiscrepancy({
+        await insertDiscrepancy({
           routeId,
           wagonId: rw.wagon_id,
           type: 'WEIGHT_MISMATCH',
@@ -242,19 +242,19 @@ export function reconcileRoute(routeId: number): ReconcileResult {
         });
       }
 
-      run(
+      await run(
         `UPDATE route_wagons SET terminal_status = ?, processed_for_route = ?, updated_at = ? WHERE id = ?`,
         [latestStatus, isProcessed, now, rw.id],
       );
     } else if (confirmedLists.length > 0) {
-      insertDiscrepancy({
+      await insertDiscrepancy({
         routeId,
         wagonId: rw.wagon_id,
         type: 'MISSING_IN_TERMINAL_LIST',
         details: { wagon_number: rw.wagon_number },
         now,
       });
-      run(
+      await run(
         `UPDATE route_wagons SET terminal_status = 'NOT_AT_TERMINAL', processed_for_route = 0, updated_at = ? WHERE id = ?`,
         [now, rw.id],
       );
@@ -264,7 +264,7 @@ export function reconcileRoute(routeId: number): ReconcileResult {
   const declaredNumbers = new Set(routeWagons.map((rw) => rw.wagon_number));
   for (const tr of terminalRows) {
     if (tr.parsed_wagon_number && !declaredNumbers.has(tr.parsed_wagon_number)) {
-      insertDiscrepancy({
+      await insertDiscrepancy({
         routeId,
         terminalListId: tr.terminal_list_id,
         type: 'EXTRA_IN_TERMINAL_LIST',
@@ -275,24 +275,24 @@ export function reconcileRoute(routeId: number): ReconcileResult {
   }
 
   const openCount =
-    queryOne<{ count: number }>(
+    (await queryOne<{ count: number }>(
       `SELECT COUNT(*) as count FROM discrepancies WHERE route_id = ? AND status = 'OPEN'`,
       [routeId],
-    )?.count ?? 0;
+    ))?.count ?? 0;
 
   const materialCount =
-    queryOne<{ count: number }>(
+    (await queryOne<{ count: number }>(
       `SELECT COUNT(*) as count FROM discrepancies
        WHERE route_id = ? AND status = 'OPEN' AND type IN (${placeholders(MATERIAL_DISCREPANCY_TYPES.length)})`,
       [routeId, ...MATERIAL_DISCREPANCY_TYPES],
-    )?.count ?? 0;
+    ))?.count ?? 0;
 
   const blockingCount =
-    queryOne<{ count: number }>(
+    (await queryOne<{ count: number }>(
       `SELECT COUNT(*) as count FROM discrepancies
        WHERE route_id = ? AND status = 'OPEN' AND type IN (${placeholders(BLOCKING_CLOSE_TYPES.length)})`,
       [routeId, ...BLOCKING_CLOSE_TYPES],
-    )?.count ?? 0;
+    ))?.count ?? 0;
 
   const newStatus = computeRouteStatus({
     wagonCount,
@@ -302,7 +302,7 @@ export function reconcileRoute(routeId: number): ReconcileResult {
 
   const closedAt = newStatus === 'CLOSED' ? route.closed_at || now : null;
 
-  run(
+  await run(
     `UPDATE routes
      SET status = ?, wagon_count = ?, processed_count = ?, closed_at = ?, updated_at = ?
      WHERE id = ?`,

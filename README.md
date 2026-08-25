@@ -2,16 +2,9 @@
 
 Веб-приложение для регистрации маршрутов, внесения списков терминала и сверки номеров вагонов (контрольная цифра, лишние/отсутствующие, масса).
 
-Стек: **Node.js + Express + better-sqlite3 + React + Vite + TypeScript**. Это сознательный выбор под деплой frontend на Vercel: Python/FastAPI + SQLite на serverless Vercel не персистится.
+Стек: **Node.js + Express + SQLite или Neon (Postgres) + React + Vite + TypeScript**.
 
-## Что где живёт
-
-| Часть | Где запускать |
-| --- | --- |
-| Frontend (статический Vite build) | Vercel, любой static host |
-| API + SQLite | Хост **с постоянным диском**: Railway, Fly.io, VPS, локальный Windows |
-
-SQLite на Vercel serverless **нельзя** использовать как рабочую базу: файловая система эфемерна. Postgres/Firebase/Supabase по ТЗ запрещены.
+Локально по умолчанию — SQLite. В облаке (Vercel) — `DATABASE_URL` на Neon.
 
 ## Требования
 
@@ -66,16 +59,25 @@ npm run seed:demo
 
 ## Деплой
 
-### Frontend на Vercel
+### Vercel + Neon (рекомендуется для облака)
 
-1. `npm run build` → каталог `dist/`
-2. Root / output: `dist`
-3. `vercel.json` уже содержит SPA rewrite на `index.html`
-4. Если API на другом хосте, соберите с `VITE_API_BASE_URL=https://api.example.com`
+1. Создайте проект в [Neon](https://neon.tech) (Free), скопируйте connection string.
+2. Импортируйте репозиторий в Vercel.
+3. Environment Variables на Vercel:
+   - `DATABASE_URL` = строка Neon (`postgresql://…?sslmode=require`)
+   - `APP_ENV=production`
+   - `CORS_ORIGIN=*` (или URL вашего Vercel-приложения)
+   - при необходимости `OCR_API_KEY`, `OCR_MODEL`
+4. Deploy. API: `/api/*` (serverless), фронт — статика из `dist/`.
+5. Холодный старт Neon после простоя (~5 мин) допустим для вспомогательного учёта.
 
-Vercel **не** поднимает Express и **не** хранит SQLite.
+Локально без Neon: **не** задавайте `DATABASE_URL` — используется SQLite (`DATABASE_PATH`). Код SQLite сохранён; можно вернуться, убрав `DATABASE_URL`.
 
-### API на хосте с диском
+### Frontend-only / старый вариант
+
+Vercel **не** хранит SQLite. Без `DATABASE_URL` API на Vercel не поднимется корректно.
+
+### API на хосте с диском (SQLite)
 
 ```bat
 set APP_ENV=production

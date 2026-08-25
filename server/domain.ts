@@ -29,11 +29,11 @@ function eventTypeForOperation(operationType: string): string {
   }
 }
 
-export function getOrCreateWagon(numberRaw: string, now: string): { id: number; number: string } | null {
+export async function getOrCreateWagon(numberRaw: string, now: string): Promise<{ id: number; number: string } | null> {
   const check = validateWagonChecksum(numberRaw);
   if (!isStoredWagonNumber(check.normalized)) return null;
 
-  run(
+  await run(
     `INSERT INTO wagons (wagon_number, is_checksum_valid, created_at, updated_at)
      VALUES (?, ?, ?, ?)
      ON CONFLICT(wagon_number) DO UPDATE SET
@@ -41,11 +41,11 @@ export function getOrCreateWagon(numberRaw: string, now: string): { id: number; 
        updated_at = excluded.updated_at`,
     [check.normalized, check.isValid ? 1 : 0, now, now],
   );
-  const wagon = queryOne<{ id: number }>('SELECT id FROM wagons WHERE wagon_number = ?', [check.normalized]);
+  const wagon = await queryOne<{ id: number }>('SELECT id FROM wagons WHERE wagon_number = ?', [check.normalized]);
   return wagon ? { id: wagon.id, number: check.normalized } : null;
 }
 
-export function createRouteRecord(input: {
+export async function createRouteRecord(input: {
   display_name: string;
   product_type_id: number;
   product_grade_id?: number | null;
@@ -53,23 +53,24 @@ export function createRouteRecord(input: {
   route_date?: string | null;
   notes?: string | null;
   wagons: IncomingWagon[];
-}): Record<string, unknown> {
+}): Promise<Record<string, unknown>> {
   const now = nowIso();
   const validWagons: Array<{ wagonId: number; weight: number | null; seq: number }> = [];
   const seen = new Set<string>();
 
-  input.wagons.forEach((w, idx) => {
+  for (let idx = 0; idx < input.wagons.length; idx++) {
+    const w = input.wagons[idx];
     const raw = w.parsed_wagon_number || w.raw_wagon_number || '';
-    const created = getOrCreateWagon(raw, now);
-    if (!created) return;
-    if (seen.has(created.number)) return;
+    const created = await getOrCreateWagon(raw, now);
+    if (!created) continue;
+    if (seen.has(created.number)) continue;
     seen.add(created.number);
     validWagons.push({
       wagonId: created.id,
       weight: w.weight_kg != null ? Number(w.weight_kg) : null,
       seq: idx + 1,
     });
-  });
+  }
 
   if (validWagons.length === 0) {
     throw new AppError(
@@ -79,8 +80,8 @@ export function createRouteRecord(input: {
     );
   }
 
-  const internalCode = generateInternalCode();
-  const { lastInsertRowid: routeId } = run(
+  const internalCode = await generateInternalCode();
+  const { lastInsertRowid: routeId } = await run(
     `INSERT INTO routes (
       internal_code, display_name, product_type_id, product_grade_id, station_id,
       route_date, status, wagon_count, processed_count, notes, created_at, updated_at
@@ -100,7 +101,7 @@ export function createRouteRecord(input: {
   );
 
   for (const w of validWagons) {
-    run(
+    await run(
       `INSERT INTO route_wagons (
         route_id, wagon_id, sequence_no, declared_weight_kg, terminal_status, processed_for_route, created_at, updated_at
       ) VALUES (?, ?, ?, ?, 'NOT_AT_TERMINAL', 0, ?, ?)`,
@@ -108,19 +109,19 @@ export function createRouteRecord(input: {
     );
   }
 
-  reconcileRoute(routeId);
-  return queryOne('SELECT * FROM routes WHERE id = ?', [routeId]) as Record<string, unknown>;
+  await reconcileRoute(routeId);
+  return await queryOne('SELECT * FROM routes WHERE id = ?', [routeId]) as Record<string, unknown>;
 }
 
-export function addWagonsToRoute(routeId: number, wagons: IncomingWagon[]): Record<string, unknown> {
-  const route = queryOne<{ id: number; status: string }>('SELECT id, status FROM routes WHERE id = ?', [routeId]);
+export async function addWagonsToRoute(routeId: number, wagons: IncomingWagon[]): Promise<Record<string, unknown>> {
+  const route = await queryOne<{ id: number; status: string }>('SELECT id, status FROM routes WHERE id = ?', [routeId]);
   if (!route) throw new AppError(404, 'NOT_FOUND', 'Маршрут не найден');
   if (route.status === 'ARCHIVED') {
     throw new AppError(409, 'CONFLICT', 'Сначала верните маршрут в работу');
   }
 
   const now = nowIso();
-  const existing = query<{ wagon_number: string }>(
+  const existing = await query<{ wagon_number: string }>(
     `SELECT w.wagon_number
      FROM route_wagons rw
      JOIN wagons w ON w.id = rw.wagon_id
@@ -129,24 +130,25 @@ export function addWagonsToRoute(routeId: number, wagons: IncomingWagon[]): Reco
   );
   const seen = new Set(existing.map((row) => row.wagon_number));
   const maxSeq =
-    queryOne<{ m: number }>('SELECT COALESCE(MAX(sequence_no), 0) as m FROM route_wagons WHERE route_id = ?', [
+    (await queryOne<{ m: number }>('SELECT COALESCE(MAX(sequence_no), 0) as m FROM route_wagons WHERE route_id = ?', [
       routeId,
-    ])?.m || 0;
+    ]))?.m || 0;
 
   let added = 0;
-  wagons.forEach((w, idx) => {
+  for (let idx = 0; idx < wagons.length; idx++) {
+    const w = wagons[idx];
     const raw = w.parsed_wagon_number || w.raw_wagon_number || '';
-    const created = getOrCreateWagon(raw, now);
-    if (!created || seen.has(created.number)) return;
+    const created = await getOrCreateWagon(raw, now);
+    if (!created || seen.has(created.number)) continue;
     seen.add(created.number);
-    run(
+    await run(
       `INSERT INTO route_wagons (
         route_id, wagon_id, sequence_no, declared_weight_kg, terminal_status, processed_for_route, created_at, updated_at
       ) VALUES (?, ?, ?, ?, 'NOT_AT_TERMINAL', 0, ?, ?)`,
       [routeId, created.id, maxSeq + idx + 1, w.weight_kg != null ? Number(w.weight_kg) : null, now, now],
     );
     added += 1;
-  });
+  }
 
   if (added === 0) {
     throw new AppError(
@@ -156,31 +158,31 @@ export function addWagonsToRoute(routeId: number, wagons: IncomingWagon[]): Reco
     );
   }
 
-  reconcileRoute(routeId);
-  return queryOne('SELECT * FROM routes WHERE id = ?', [routeId]) as Record<string, unknown>;
+  await reconcileRoute(routeId);
+  return await queryOne('SELECT * FROM routes WHERE id = ?', [routeId]) as Record<string, unknown>;
 }
 
-export function archiveRoute(routeId: number): { success: true; status: 'ARCHIVED' } {
-  const route = queryOne<{ status: string }>('SELECT status FROM routes WHERE id = ?', [routeId]);
+export async function archiveRoute(routeId: number): Promise<{ success: true; status: 'ARCHIVED' }> {
+  const route = await queryOne<{ status: string }>('SELECT status FROM routes WHERE id = ?', [routeId]);
   if (!route) throw new AppError(404, 'NOT_FOUND', 'Маршрут не найден');
   if (route.status !== 'CLOSED' && route.status !== 'ARCHIVED') {
     throw new AppError(409, 'CONFLICT', 'В архив можно перенести только закрытый маршрут');
   }
   const now = nowIso();
-  run("UPDATE routes SET status = 'ARCHIVED', archived_at = ?, updated_at = ? WHERE id = ?", [now, now, routeId]);
+  await run("UPDATE routes SET status = 'ARCHIVED', archived_at = ?, updated_at = ? WHERE id = ?", [now, now, routeId]);
   return { success: true, status: 'ARCHIVED' };
 }
 
-export function unarchiveRoute(routeId: number): Record<string, unknown> {
-  const route = queryOne<{ id: number }>('SELECT id FROM routes WHERE id = ?', [routeId]);
+export async function unarchiveRoute(routeId: number): Promise<Record<string, unknown>> {
+  const route = await queryOne<{ id: number }>('SELECT id FROM routes WHERE id = ?', [routeId]);
   if (!route) throw new AppError(404, 'NOT_FOUND', 'Маршрут не найден');
   const now = nowIso();
-  run("UPDATE routes SET status = 'ACTIVE', archived_at = NULL, updated_at = ? WHERE id = ?", [now, routeId]);
-  const result = reconcileRoute(routeId);
+  await run("UPDATE routes SET status = 'ACTIVE', archived_at = NULL, updated_at = ? WHERE id = ?", [now, routeId]);
+  const result = await reconcileRoute(routeId);
   return { success: true, status: result.status };
 }
 
-export function createTerminalListRecord(input: {
+export async function createTerminalListRecord(input: {
   route_id?: number | null;
   product_type_id: number;
   product_grade_id?: number | null;
@@ -191,10 +193,10 @@ export function createTerminalListRecord(input: {
   import_method?: string;
   rows: IncomingWagon[];
   confirm_now?: boolean;
-}): Record<string, unknown> {
+}): Promise<Record<string, unknown>> {
   const now = nowIso();
   const status = input.confirm_now ? 'CONFIRMED' : 'DRAFT';
-  const { lastInsertRowid: listId } = run(
+  const { lastInsertRowid: listId } = await run(
     `INSERT INTO terminal_lists (
       route_id, product_type_id, product_grade_id, station_id, display_name,
       operation_type, list_date, import_method, status, created_at, confirmed_at, updated_at
@@ -215,23 +217,24 @@ export function createTerminalListRecord(input: {
     ],
   );
 
-  insertTerminalRows(listId, input.rows, now, status === 'CONFIRMED');
+  await insertTerminalRows(listId, input.rows, now, status === 'CONFIRMED');
 
   if (status === 'CONFIRMED') {
-    applyConfirmedList(listId);
+    await applyConfirmedList(listId);
   }
 
-  return queryOne('SELECT * FROM terminal_lists WHERE id = ?', [listId]) as Record<string, unknown>;
+  return await queryOne('SELECT * FROM terminal_lists WHERE id = ?', [listId]) as Record<string, unknown>;
 }
 
-function insertTerminalRows(
+async function insertTerminalRows(
   listId: number,
   rows: IncomingWagon[],
   now: string,
   confirmed: boolean,
-): void {
+): Promise<void> {
   const seen = new Set<string>();
-  rows.forEach((r, idx) => {
+  for (let idx = 0; idx < rows.length; idx++) {
+    const r = rows[idx];
     const raw = r.raw_wagon_number || r.parsed_wagon_number || '';
     const check = validateWagonChecksum(raw);
     const isDup = Boolean(check.normalized) && seen.has(check.normalized);
@@ -240,7 +243,7 @@ function insertTerminalRows(
     let wagonId: number | null = null;
     const stored = isStoredWagonNumber(check.normalized);
     if (stored && !isDup) {
-      const created = getOrCreateWagon(check.normalized, now);
+      const created = await getOrCreateWagon(check.normalized, now);
       wagonId = created?.id ?? null;
     }
 
@@ -250,7 +253,7 @@ function insertTerminalRows(
     else if (isDup) rowStatus = 'DUPLICATE';
     if (confirmed && rowStatus === 'VALID') rowStatus = 'CONFIRMED';
 
-    run(
+    await run(
       `INSERT INTO terminal_list_rows (
         terminal_list_id, wagon_id, raw_wagon_number, parsed_wagon_number, checksum_valid,
         weight_kg, row_status, parsing_confidence, source_row_no, created_at
@@ -268,11 +271,11 @@ function insertTerminalRows(
         now,
       ],
     );
-  });
+  }
 }
 
-export function applyConfirmedList(listId: number): void {
-  const list = queryOne<{
+export async function applyConfirmedList(listId: number): Promise<void> {
+  const list = await queryOne<{
     id: number;
     route_id: number | null;
     operation_type: string;
@@ -283,7 +286,7 @@ export function applyConfirmedList(listId: number): void {
   if (!list) throw new AppError(404, 'NOT_FOUND', 'Список терминала не найден');
 
   const now = nowIso();
-  const rows = query<{
+  const rows = await query<{
     wagon_id: number | null;
     parsed_wagon_number: string | null;
     weight_kg: number | null;
@@ -296,7 +299,7 @@ export function applyConfirmedList(listId: number): void {
   const eventType = eventTypeForOperation(list.operation_type);
   for (const row of rows) {
     if (!row.wagon_id) continue;
-    run(
+    await run(
       `INSERT INTO wagon_events (
         wagon_id, route_id, terminal_list_id, event_type, event_at, weight_kg, product_type_id, product_grade_id, created_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -315,12 +318,12 @@ export function applyConfirmedList(listId: number): void {
   }
 
   if (list.route_id) {
-    reconcileRoute(list.route_id);
+    await reconcileRoute(list.route_id);
   }
 }
 
-export function confirmDraftTerminalList(listId: number): Record<string, unknown> {
-  const list = queryOne<{ id: number; status: string; route_id: number | null }>(
+export async function confirmDraftTerminalList(listId: number): Promise<Record<string, unknown>> {
+  const list = await queryOne<{ id: number; status: string; route_id: number | null }>(
     'SELECT * FROM terminal_lists WHERE id = ?',
     [listId],
   );
@@ -333,18 +336,18 @@ export function confirmDraftTerminalList(listId: number): Record<string, unknown
   }
 
   const now = nowIso();
-  run(
+  await run(
     `UPDATE terminal_lists SET status = 'CONFIRMED', confirmed_at = ?, updated_at = ? WHERE id = ?`,
     [now, now, listId],
   );
-  run(`UPDATE terminal_list_rows SET row_status = 'CONFIRMED' WHERE terminal_list_id = ? AND row_status = 'VALID'`, [
+  await run(`UPDATE terminal_list_rows SET row_status = 'CONFIRMED' WHERE terminal_list_id = ? AND row_status = 'VALID'`, [
     listId,
   ]);
-  applyConfirmedList(listId);
+  await applyConfirmedList(listId);
   return { success: true, status: 'CONFIRMED' };
 }
 
-export function matchRouteCandidates(wagonNumbers: string[], productTypeId?: number | null) {
+export async function matchRouteCandidates(wagonNumbers: string[], productTypeId?: number | null) {
   const normNumbers = wagonNumbers.map((w) => normalizeWagonNumber(w)).filter((n) => isStoredWagonNumber(n));
   if (normNumbers.length === 0) return [];
 
@@ -363,7 +366,7 @@ export function matchRouteCandidates(wagonNumbers: string[], productTypeId?: num
     params.push(productTypeId);
   }
 
-  const joined = query<{
+  const joined = await query<{
     id: number;
     display_name: string;
     internal_code: string;
@@ -418,15 +421,15 @@ export function matchRouteCandidates(wagonNumbers: string[], productTypeId?: num
     .sort((a, b) => b.matches - a.matches);
 }
 
-export function createImportSession(
+export async function createImportSession(
   entityType: 'ROUTE' | 'TERMINAL_LIST',
   importMethod: string,
   payload: ParsePayload,
-): Record<string, unknown> {
+): Promise<Record<string, unknown>> {
   const now = nowIso();
   const rows = payload.rows || [];
   const valid = rows.filter((r) => r.is_checksum_valid && !r.is_duplicate).length;
-  const { lastInsertRowid } = run(
+  const { lastInsertRowid } = await run(
     `INSERT INTO import_sessions (
       entity_type, import_method, state, parser_version, rows_total, rows_valid, rows_invalid, payload_json, created_at, updated_at
     ) VALUES (?, ?, 'REVIEW', ?, ?, ?, ?, ?, ?, ?)`,
@@ -442,11 +445,11 @@ export function createImportSession(
       now,
     ],
   );
-  return queryOne('SELECT * FROM import_sessions WHERE id = ?', [lastInsertRowid]) as Record<string, unknown>;
+  return await queryOne('SELECT * FROM import_sessions WHERE id = ?', [lastInsertRowid]) as Record<string, unknown>;
 }
 
-export function updateImportSessionRows(sessionId: number, payload: ParsePayload): Record<string, unknown> {
-  const session = queryOne<{ id: number; state: string }>('SELECT * FROM import_sessions WHERE id = ?', [sessionId]);
+export async function updateImportSessionRows(sessionId: number, payload: ParsePayload): Promise<Record<string, unknown>> {
+  const session = await queryOne<{ id: number; state: string }>('SELECT * FROM import_sessions WHERE id = ?', [sessionId]);
   if (!session) throw new AppError(404, 'NOT_FOUND', 'Сеанс импорта не найден');
   if (session.state === 'CONFIRMED') {
     throw new AppError(409, 'CONFLICT', 'Сеанс уже подтверждён');
@@ -457,20 +460,20 @@ export function updateImportSessionRows(sessionId: number, payload: ParsePayload
   const now = nowIso();
   const rows = payload.rows || [];
   const valid = rows.filter((r) => r.is_checksum_valid && !r.is_duplicate).length;
-  run(
+  await run(
     `UPDATE import_sessions
      SET state = 'REVIEW', rows_total = ?, rows_valid = ?, rows_invalid = ?, payload_json = ?, updated_at = ?
      WHERE id = ?`,
     [rows.length, valid, rows.length - valid, JSON.stringify(payload), now, sessionId],
   );
-  return queryOne('SELECT * FROM import_sessions WHERE id = ?', [sessionId]) as Record<string, unknown>;
+  return await queryOne('SELECT * FROM import_sessions WHERE id = ?', [sessionId]) as Record<string, unknown>;
 }
 
-export function confirmImportSession(
+export async function confirmImportSession(
   sessionId: number,
   body: Record<string, unknown>,
-): Record<string, unknown> {
-  const session = queryOne<{
+): Promise<Record<string, unknown>> {
+  const session = await queryOne<{
     id: number;
     state: string;
     entity_type: string;
@@ -490,7 +493,7 @@ export function confirmImportSession(
 
   let created: Record<string, unknown>;
   if (session.entity_type === 'ROUTE' || body.entity_type === 'ROUTE') {
-    created = createRouteRecord({
+    created = await createRouteRecord({
       display_name: String(body.display_name || ''),
       product_type_id: Number(body.product_type_id),
       product_grade_id: body.product_grade_id ? Number(body.product_grade_id) : null,
@@ -500,7 +503,7 @@ export function confirmImportSession(
       wagons: rows,
     });
   } else {
-    created = createTerminalListRecord({
+    created = await createTerminalListRecord({
       route_id: body.route_id ? Number(body.route_id) : null,
       product_type_id: Number(body.product_type_id),
       product_grade_id: body.product_grade_id ? Number(body.product_grade_id) : null,
@@ -515,12 +518,12 @@ export function confirmImportSession(
   }
 
   const now = nowIso();
-  run(`UPDATE import_sessions SET state = 'CONFIRMED', updated_at = ? WHERE id = ?`, [now, sessionId]);
+  await run(`UPDATE import_sessions SET state = 'CONFIRMED', updated_at = ? WHERE id = ?`, [now, sessionId]);
   return { session_id: sessionId, created };
 }
 
-export function cancelImportSession(sessionId: number): Record<string, unknown> {
-  const session = queryOne<{ id: number; state: string }>('SELECT * FROM import_sessions WHERE id = ?', [sessionId]);
+export async function cancelImportSession(sessionId: number): Promise<Record<string, unknown>> {
+  const session = await queryOne<{ id: number; state: string }>('SELECT * FROM import_sessions WHERE id = ?', [sessionId]);
   if (!session) throw new AppError(404, 'NOT_FOUND', 'Сеанс импорта не найден');
   if (session.state === 'CONFIRMED') {
     throw new AppError(409, 'CONFLICT', 'Подтверждённый сеанс нельзя отменить');
@@ -528,7 +531,7 @@ export function cancelImportSession(sessionId: number): Record<string, unknown> 
   if (session.state === 'CANCELLED') {
     return { success: true, status: 'CANCELLED', idempotent: true };
   }
-  run(`UPDATE import_sessions SET state = 'CANCELLED', updated_at = ? WHERE id = ?`, [nowIso(), sessionId]);
+  await run(`UPDATE import_sessions SET state = 'CANCELLED', updated_at = ? WHERE id = ?`, [nowIso(), sessionId]);
   return { success: true, status: 'CANCELLED' };
 }
 

@@ -32,7 +32,13 @@ const cwd = process.cwd();
 export const config = {
   appEnv: envString('APP_ENV', 'development'),
   port: envInt('PORT', 3000),
+  /** Local SQLite file. Ignored when databaseUrl is set. */
   databasePath: envString('DATABASE_PATH', path.join(cwd, 'data', 'rst.sqlite')),
+  /**
+   * Neon / Postgres connection string. When set, app uses Postgres instead of SQLite.
+   * Example: postgresql://user:pass@ep-xxx.neon.tech/neondb?sslmode=require
+   */
+  databaseUrl: process.env.DATABASE_URL || process.env.POSTGRES_URL || '',
   maxUploadMb: envInt('MAX_UPLOAD_MB', 25),
   ocrProvider: envString('OCR_PROVIDER', 'gemini'),
   ocrApiKey: process.env.OCR_API_KEY || process.env.GEMINI_API_KEY || '',
@@ -45,14 +51,17 @@ export const config = {
   get isProduction() {
     return this.appEnv === 'production';
   },
+  get dbDriver(): 'sqlite' | 'postgres' {
+    return this.databaseUrl ? 'postgres' : 'sqlite';
+  },
 };
 
 export function ensureAppDirs(): void {
-  for (const dir of [
-    path.dirname(config.databasePath),
-    config.importTempDir,
-    config.backupDir,
-  ]) {
+  const dirs = [config.importTempDir, config.backupDir];
+  if (!config.databaseUrl) {
+    dirs.unshift(path.dirname(config.databasePath));
+  }
+  for (const dir of dirs) {
     fs.mkdirSync(dir, { recursive: true });
   }
 }

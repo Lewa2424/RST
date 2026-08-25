@@ -1,238 +1,286 @@
-import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
 import { config, ensureAppDirs } from './config.js';
-import { seedCatalogs } from './seed.js';
+import { POSTGRES_SCHEMA, SQLITE_SCHEMA } from './db/schema.js';
 
-let dbInstance: Database.Database | null = null;
+export type DbDriver = 'sqlite' | 'postgres';
 
-export function getDb(): Database.Database {
-  if (dbInstance) return dbInstance;
-  dbInstance = openDatabase(config.databasePath);
-  return dbInstance;
+export type RunResult = { lastInsertRowid: number; changes: number };
+
+type SqliteDatabase = import('better-sqlite3').Database;
+type PgPool = import('@neondatabase/serverless').Pool;
+type PgClient = import('@neondatabase/serverless').PoolClient;
+
+interface DbBackend {
+  driver: DbDriver;
+  query<T>(sql: string, params?: unknown[]): Promise<T[]>;
+  run(sql: string, params?: unknown[]): Promise<RunResult>;
+  exec(sql: string): Promise<void>;
+  transaction<T>(fn: () => Promise<T>): Promise<T>;
+  close(): Promise<void>;
+  /** SQLite-only backup helper */
+  backup?(dest: string): Promise<void>;
 }
 
-export function openDatabase(dbPath: string): Database.Database {
-  if (dbPath !== ':memory:') {
-    ensureAppDirs();
-    fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+const INTISH =
+  /^(id|count|m|.*_id|.*_count|wagon_count|processed_count|sequence_no|.*_kg|is_.*|checksum_valid|rows_total|rows_valid|rows_invalid|source_row_no|active_routes_count|total_wagons_count)$/i;
+
+function mapPgValue(key: string, value: unknown): unknown {
+  if (typeof value === 'string' && INTISH.test(key) && /^-?\d+$/.test(value)) {
+    return Number(value);
   }
-
-  const db = new Database(dbPath);
-  db.pragma('journal_mode = WAL');
-  db.pragma('foreign_keys = ON');
-  db.pragma('busy_timeout = 5000');
-  initSchema(db);
-  seedCatalogs(db);
-  return db;
+  return value;
 }
 
-export function closeDatabase(): void {
-  if (dbInstance) {
-    dbInstance.close();
-    dbInstance = null;
+function mapPgRow<T extends Record<string, unknown>>(row: T): T {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(row)) {
+    out[k] = mapPgValue(k, v);
   }
+  return out as T;
 }
 
-export function setDb(db: Database.Database): void {
-  dbInstance = db;
+/** App SQL uses `?` placeholders (SQLite style). */
+export function translateSql(sql: string, driver: DbDriver): string {
+  let text = sql;
+  if (driver === 'postgres') {
+    if (/INSERT\s+OR\s+IGNORE\s+INTO/i.test(text)) {
+      text = text.replace(/INSERT\s+OR\s+IGNORE\s+INTO/i, 'INSERT INTO');
+      if (!/ON\s+CONFLICT/i.test(text)) {
+        text = `${text.trim()} ON CONFLICT DO NOTHING`;
+      }
+    }
+    text = text.replace(/\bexcluded\./gi, 'EXCLUDED.');
+    let i = 0;
+    text = text.replace(/\?/g, () => `$${++i}`);
+  }
+  return text;
 }
 
-export function query<T = Record<string, unknown>>(sql: string, params: unknown[] = []): T[] {
-  return getDb().prepare(sql).all(...params) as T[];
-}
+function createSqliteBackend(db: SqliteDatabase): DbBackend {
+  let chain: Promise<unknown> = Promise.resolve();
+  let txDepth = 0;
 
-export function queryOne<T = Record<string, unknown>>(sql: string, params: unknown[] = []): T | null {
-  const row = getDb().prepare(sql).get(...params) as T | undefined;
-  return row ?? null;
-}
+  const withLock = <T>(fn: () => T | Promise<T>): Promise<T> => {
+    const run = chain.then(() => fn());
+    chain = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  };
 
-export function run(
-  sql: string,
-  params: unknown[] = [],
-): { lastInsertRowid: number; changes: number } {
-  const info = getDb().prepare(sql).run(...params);
+  const syncQuery = <T>(sql: string, params: unknown[]): T[] =>
+    db.prepare(translateSql(sql, 'sqlite')).all(...params) as T[];
+
+  const syncRun = (sql: string, params: unknown[]): RunResult => {
+    const info = db.prepare(translateSql(sql, 'sqlite')).run(...params);
+    return {
+      lastInsertRowid: Number(info.lastInsertRowid),
+      changes: info.changes,
+    };
+  };
+
   return {
-    lastInsertRowid: Number(info.lastInsertRowid),
-    changes: info.changes,
+    driver: 'sqlite',
+    query<T>(sql: string, params: unknown[] = []): Promise<T[]> {
+      if (txDepth > 0) return Promise.resolve(syncQuery<T>(sql, params));
+      return withLock(() => syncQuery<T>(sql, params));
+    },
+    run(sql: string, params: unknown[] = []): Promise<RunResult> {
+      if (txDepth > 0) return Promise.resolve(syncRun(sql, params));
+      return withLock(() => syncRun(sql, params));
+    },
+    exec(sql: string): Promise<void> {
+      if (txDepth > 0) {
+        db.exec(sql);
+        return Promise.resolve();
+      }
+      return withLock(() => {
+        db.exec(sql);
+      });
+    },
+    transaction<T>(fn: () => Promise<T>): Promise<T> {
+      return withLock(async () => {
+        db.exec('BEGIN');
+        txDepth += 1;
+        try {
+          const result = await fn();
+          db.exec('COMMIT');
+          return result;
+        } catch (err) {
+          try {
+            db.exec('ROLLBACK');
+          } catch {
+            // ignore
+          }
+          throw err;
+        } finally {
+          txDepth -= 1;
+        }
+      });
+    },
+    async close(): Promise<void> {
+      db.close();
+    },
+    async backup(dest: string): Promise<void> {
+      await db.backup(dest);
+    },
   };
 }
 
-export function transaction<T>(fn: () => T): T {
-  return getDb().transaction(fn)();
+function createPostgresBackend(pool: PgPool): DbBackend {
+  let txClient: PgClient | null = null;
+
+  const client = () => txClient ?? pool;
+
+  return {
+    driver: 'postgres',
+    async query<T>(sql: string, params: unknown[] = []): Promise<T[]> {
+      const text = translateSql(sql, 'postgres');
+      const result = await client().query(text, params);
+      return result.rows.map((row) => mapPgRow(row as Record<string, unknown>)) as T[];
+    },
+    async run(sql: string, params: unknown[] = []): Promise<RunResult> {
+      let text = translateSql(sql, 'postgres');
+      const isInsert = /^\s*INSERT\s+/i.test(text);
+      if (isInsert && !/\bRETURNING\b/i.test(text)) {
+        text = `${text.trim()} RETURNING id`;
+      }
+      const result = await client().query(text, params);
+      const id = result.rows[0]?.id;
+      return {
+        lastInsertRowid: id != null ? Number(id) : 0,
+        changes: result.rowCount ?? 0,
+      };
+    },
+    async exec(sql: string): Promise<void> {
+      await client().query(sql);
+    },
+    async transaction<T>(fn: () => Promise<T>): Promise<T> {
+      if (txClient) {
+        // Nested: rely on caller serialization; run inline (SAVEPOINT would be better).
+        return fn();
+      }
+      const c = await pool.connect();
+      txClient = c;
+      try {
+        await c.query('BEGIN');
+        const result = await fn();
+        await c.query('COMMIT');
+        return result;
+      } catch (err) {
+        try {
+          await c.query('ROLLBACK');
+        } catch {
+          // ignore
+        }
+        throw err;
+      } finally {
+        txClient = null;
+        c.release();
+      }
+    },
+    async close(): Promise<void> {
+      await pool.end();
+    },
+  };
+}
+
+let backend: DbBackend | null = null;
+/** Kept for SQLite tests / scripts that need the raw better-sqlite3 handle. */
+let sqliteHandle: SqliteDatabase | null = null;
+
+export function getDriver(): DbDriver {
+  return config.databaseUrl ? 'postgres' : 'sqlite';
 }
 
 export function nowIso(): string {
   return new Date().toISOString();
 }
 
-function initSchema(db: Database.Database): void {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS product_types (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL,
-      normalized_name TEXT NOT NULL UNIQUE,
-      is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    );
+export function normalizeName(name: string): string {
+  return name.trim().toLowerCase();
+}
 
-    CREATE TABLE IF NOT EXISTS product_grades (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      product_type_id INTEGER NOT NULL REFERENCES product_types(id),
-      name TEXT NOT NULL,
-      normalized_name TEXT NOT NULL,
-      is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
-      UNIQUE(product_type_id, normalized_name)
-    );
+async function seedCatalogs(): Promise<void> {
+  const rows = await query<{ count: number }>('SELECT COUNT(*) as count FROM product_types');
+  if ((rows[0]?.count || 0) > 0) return;
 
-    CREATE TABLE IF NOT EXISTS stations (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL,
-      normalized_name TEXT NOT NULL UNIQUE,
-      is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    );
+  const now = nowIso();
+  await run(
+    `INSERT INTO product_types (id, name, normalized_name, is_active, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?)`,
+    [1, 'Чугун', 'чугун', now, now],
+  );
+  await run(
+    `INSERT INTO product_types (id, name, normalized_name, is_active, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?)`,
+    [2, 'Уголь', 'уголь', now, now],
+  );
+  await run(
+    `INSERT INTO stations (id, name, normalized_name, is_active, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?)`,
+    [1, 'Świnoujście', 'świnoujście', now, now],
+  );
+  await run(
+    `INSERT INTO stations (id, name, normalized_name, is_active, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?)`,
+    [2, 'Gdańsk', 'gdańsk', now, now],
+  );
 
-    CREATE TABLE IF NOT EXISTS routes (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      internal_code TEXT NOT NULL UNIQUE,
-      display_name TEXT NOT NULL,
-      product_type_id INTEGER NOT NULL REFERENCES product_types(id),
-      product_grade_id INTEGER NULL REFERENCES product_grades(id),
-      station_id INTEGER NULL REFERENCES stations(id),
-      route_date TEXT NULL,
-      status TEXT NOT NULL CHECK (status IN ('ACTIVE','PARTIAL','CLOSED','HAS_DISCREPANCIES','ARCHIVED')),
-      wagon_count INTEGER NOT NULL DEFAULT 0,
-      processed_count INTEGER NOT NULL DEFAULT 0,
-      notes TEXT NULL,
-      closed_at TEXT NULL,
-      archived_at TEXT NULL,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    );
+  if (getDriver() === 'postgres') {
+    try {
+      await exec(
+        `SELECT setval(pg_get_serial_sequence('product_types', 'id'), (SELECT COALESCE(MAX(id), 1) FROM product_types))`,
+      );
+      await exec(
+        `SELECT setval(pg_get_serial_sequence('stations', 'id'), (SELECT COALESCE(MAX(id), 1) FROM stations))`,
+      );
+    } catch {
+      // IDENTITY sequences differ by PG version; ignore if setval unavailable.
+    }
+  }
+}
 
-    CREATE TABLE IF NOT EXISTS wagons (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      wagon_number TEXT NOT NULL UNIQUE,
-      is_checksum_valid INTEGER NOT NULL CHECK (is_checksum_valid IN (0,1)),
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    );
+function requireBackend(): DbBackend {
+  if (!backend) {
+    throw new Error('База данных не инициализирована. Вызовите initDatabase() / openDatabase().');
+  }
+  return backend;
+}
 
-    CREATE TABLE IF NOT EXISTS route_wagons (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      route_id INTEGER NOT NULL REFERENCES routes(id) ON DELETE CASCADE,
-      wagon_id INTEGER NOT NULL REFERENCES wagons(id),
-      sequence_no INTEGER NULL,
-      declared_weight_kg INTEGER NULL,
-      terminal_status TEXT NOT NULL DEFAULT 'NOT_AT_TERMINAL' CHECK (terminal_status IN (
-        'NOT_AT_TERMINAL',
-        'AT_TERMINAL',
-        'UNLOADED',
-        'CLEANED',
-        'LOADED',
-        'DEPARTED_LOADED',
-        'DEPARTED_EMPTY'
-      )),
-      processed_for_route INTEGER NOT NULL DEFAULT 0 CHECK (processed_for_route IN (0,1)),
-      notes TEXT NULL,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
-      UNIQUE(route_id, wagon_id)
-    );
+export async function query<T = Record<string, unknown>>(sql: string, params: unknown[] = []): Promise<T[]> {
+  return requireBackend().query<T>(sql, params);
+}
 
-    CREATE TABLE IF NOT EXISTS terminal_lists (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      route_id INTEGER NULL REFERENCES routes(id) ON DELETE SET NULL,
-      product_type_id INTEGER NOT NULL REFERENCES product_types(id),
-      product_grade_id INTEGER NULL REFERENCES product_grades(id),
-      station_id INTEGER NULL REFERENCES stations(id),
-      display_name TEXT NULL,
-      operation_type TEXT NOT NULL CHECK (operation_type IN ('UNLOADING','CLEANING','LOADING','DEPARTURE_LOADED','DEPARTURE_EMPTY')),
-      list_date TEXT NULL,
-      import_method TEXT NOT NULL CHECK (import_method IN ('MANUAL','TEXT','EXCEL','WORD','IMAGE')),
-      status TEXT NOT NULL CHECK (status IN ('DRAFT','CONFIRMED','CANCELLED')),
-      created_at TEXT NOT NULL,
-      confirmed_at TEXT NULL,
-      updated_at TEXT NOT NULL
-    );
+export async function queryOne<T = Record<string, unknown>>(
+  sql: string,
+  params: unknown[] = [],
+): Promise<T | null> {
+  const rows = await query<T>(sql, params);
+  return rows[0] ?? null;
+}
 
-    CREATE TABLE IF NOT EXISTS terminal_list_rows (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      terminal_list_id INTEGER NOT NULL REFERENCES terminal_lists(id) ON DELETE CASCADE,
-      wagon_id INTEGER NULL REFERENCES wagons(id),
-      raw_wagon_number TEXT NOT NULL,
-      parsed_wagon_number TEXT NULL,
-      checksum_valid INTEGER NULL,
-      weight_kg INTEGER NULL,
-      row_status TEXT NOT NULL CHECK (row_status IN ('VALID','INVALID_NUMBER','DUPLICATE','UNMATCHED','CONFLICT','CONFIRMED')),
-      parsing_confidence REAL NULL,
-      source_row_no INTEGER NULL,
-      notes TEXT NULL,
-      created_at TEXT NOT NULL
-    );
+export async function run(sql: string, params: unknown[] = []): Promise<RunResult> {
+  return requireBackend().run(sql, params);
+}
 
-    CREATE TABLE IF NOT EXISTS wagon_events (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      wagon_id INTEGER NOT NULL REFERENCES wagons(id),
-      route_id INTEGER NULL REFERENCES routes(id) ON DELETE SET NULL,
-      terminal_list_id INTEGER NULL REFERENCES terminal_lists(id) ON DELETE SET NULL,
-      event_type TEXT NOT NULL CHECK (event_type IN ('AT_TERMINAL','UNLOADED','CLEANED','LOADED','DEPARTED_LOADED','DEPARTED_EMPTY','MANUAL_CORRECTION')),
-      event_at TEXT NOT NULL,
-      weight_kg INTEGER NULL,
-      product_type_id INTEGER NULL REFERENCES product_types(id),
-      product_grade_id INTEGER NULL REFERENCES product_grades(id),
-      notes TEXT NULL,
-      created_at TEXT NOT NULL
-    );
+export async function exec(sql: string): Promise<void> {
+  return requireBackend().exec(sql);
+}
 
-    CREATE TABLE IF NOT EXISTS discrepancies (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      route_id INTEGER NOT NULL REFERENCES routes(id) ON DELETE CASCADE,
-      terminal_list_id INTEGER NULL REFERENCES terminal_lists(id) ON DELETE SET NULL,
-      wagon_id INTEGER NULL REFERENCES wagons(id),
-      type TEXT NOT NULL CHECK (type IN (
-        'MISSING_IN_TERMINAL_LIST',
-        'EXTRA_IN_TERMINAL_LIST',
-        'INVALID_CHECK_DIGIT',
-        'DUPLICATE_IN_INPUT',
-        'ACTIVE_ROUTE_CONFLICT',
-        'WEIGHT_MISMATCH',
-        'DATA_CONFLICT'
-      )),
-      status TEXT NOT NULL DEFAULT 'OPEN' CHECK (status IN ('OPEN','RESOLVED','IGNORED')),
-      details_json TEXT NOT NULL DEFAULT '{}',
-      created_at TEXT NOT NULL,
-      resolved_at TEXT NULL
-    );
+export async function transaction<T>(fn: () => Promise<T>): Promise<T> {
+  return requireBackend().transaction(fn);
+}
 
-    CREATE TABLE IF NOT EXISTS import_sessions (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      entity_type TEXT NOT NULL CHECK (entity_type IN ('ROUTE','TERMINAL_LIST')),
-      import_method TEXT NOT NULL,
-      state TEXT NOT NULL CHECK (state IN ('UPLOADED','PARSED','REVIEW','CONFIRMED','FAILED','CANCELLED')),
-      parser_version TEXT NULL,
-      rows_total INTEGER NOT NULL DEFAULT 0,
-      rows_valid INTEGER NOT NULL DEFAULT 0,
-      rows_invalid INTEGER NOT NULL DEFAULT 0,
-      payload_json TEXT NULL,
-      error_message TEXT NULL,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    );
+export async function generateInternalCode(): Promise<string> {
+  const year = new Date().getFullYear();
+  const row = await queryOne<{ count: number }>(`SELECT COUNT(*) as count FROM routes WHERE internal_code LIKE ?`, [
+    `R-${year}-%`,
+  ]);
+  const seq = String((row?.count || 0) + 1).padStart(4, '0');
+  return `R-${year}-${seq}`;
+}
 
-    CREATE INDEX IF NOT EXISTS idx_routes_display_name ON routes(display_name);
-    CREATE INDEX IF NOT EXISTS idx_wagons_wagon_number ON wagons(wagon_number);
-    CREATE INDEX IF NOT EXISTS idx_routes_filter ON routes(product_type_id, product_grade_id, station_id, status);
-    CREATE INDEX IF NOT EXISTS idx_route_wagons_processed ON route_wagons(route_id, processed_for_route);
-    CREATE INDEX IF NOT EXISTS idx_discrepancies_route ON discrepancies(route_id, status);
-    CREATE INDEX IF NOT EXISTS idx_terminal_list_rows_list ON terminal_list_rows(terminal_list_id);
-  `);
-
+async function applySqliteSchema(db: SqliteDatabase): Promise<void> {
+  db.exec(SQLITE_SCHEMA);
   try {
     db.exec(`
       CREATE UNIQUE INDEX IF NOT EXISTS idx_tlr_list_parsed
@@ -244,15 +292,84 @@ function initSchema(db: Database.Database): void {
   }
 }
 
-export function normalizeName(name: string): string {
-  return name.trim().toLowerCase();
+async function applyPostgresSchema(pool: PgPool): Promise<void> {
+  await pool.query(POSTGRES_SCHEMA);
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_tlr_list_parsed
+    ON terminal_list_rows(terminal_list_id, parsed_wagon_number)
+    WHERE parsed_wagon_number IS NOT NULL
+  `);
 }
 
-export function generateInternalCode(db: Database.Database = getDb()): string {
-  const year = new Date().getFullYear();
-  const row = db.prepare(
-    `SELECT COUNT(*) as count FROM routes WHERE internal_code LIKE ?`,
-  ).get(`R-${year}-%`) as { count: number };
-  const seq = String((row?.count || 0) + 1).padStart(4, '0');
-  return `R-${year}-${seq}`;
+/** Open SQLite (path or :memory:). Used by tests and local mode. */
+export async function openDatabase(dbPath: string = config.databasePath): Promise<void> {
+  const { default: Database } = await import('better-sqlite3');
+  if (dbPath !== ':memory:') {
+    ensureAppDirs();
+    fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+  }
+  const db = new Database(dbPath);
+  db.pragma('journal_mode = WAL');
+  db.pragma('foreign_keys = ON');
+  db.pragma('busy_timeout = 5000');
+  await applySqliteSchema(db);
+  sqliteHandle = db;
+  backend = createSqliteBackend(db);
+  await seedCatalogs();
+}
+
+export async function openPostgres(databaseUrl: string = config.databaseUrl): Promise<void> {
+  if (!databaseUrl) {
+    throw new Error('DATABASE_URL не задан');
+  }
+  const { Pool } = await import('@neondatabase/serverless');
+  const pool = new Pool({ connectionString: databaseUrl });
+  await applyPostgresSchema(pool);
+  backend = createPostgresBackend(pool);
+  sqliteHandle = null;
+  await seedCatalogs();
+}
+
+export async function initDatabase(): Promise<DbDriver> {
+  if (backend) return backend.driver;
+  if (config.databaseUrl) {
+    await openPostgres(config.databaseUrl);
+    return 'postgres';
+  }
+  await openDatabase(config.databasePath);
+  return 'sqlite';
+}
+
+export async function closeDatabase(): Promise<void> {
+  if (backend) {
+    await backend.close();
+    backend = null;
+  }
+  sqliteHandle = null;
+}
+
+/** Test helper: inject an already-opened better-sqlite3 database. */
+export function setDb(db: SqliteDatabase): void {
+  sqliteHandle = db;
+  backend = createSqliteBackend(db);
+}
+
+/** @deprecated Prefer query/run. Exposed for SQLite-only scripts. */
+export function getDb(): SqliteDatabase {
+  if (!sqliteHandle) {
+    throw new Error('SQLite handle недоступен (режим Postgres или БД не открыта)');
+  }
+  return sqliteHandle;
+}
+
+export function getBackendDriver(): DbDriver | null {
+  return backend?.driver ?? null;
+}
+
+export async function backupSqliteTo(dest: string): Promise<void> {
+  const b = requireBackend();
+  if (!b.backup) {
+    throw new Error('Файловый backup доступен только для SQLite. Для Neon используйте снапшоты в консоли Neon.');
+  }
+  await b.backup(dest);
 }

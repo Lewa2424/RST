@@ -6,7 +6,7 @@ import { createApiApp } from './server/api.js';
 
 async function startServer(): Promise<void> {
   ensureAppDirs();
-  const app = createApiApp();
+  const app = await createApiApp();
   const PORT = config.port;
 
   if (!config.isProduction) {

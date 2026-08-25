@@ -1,7 +1,8 @@
 import express, { type Request, type Response, type NextFunction } from 'express';
+import 'express-async-errors';
 import multer from 'multer';
 import { config } from './config.js';
-import { getDb, nowIso, query, queryOne, run, transaction } from './db.js';
+import { initDatabase, getBackendDriver, nowIso, query, queryOne, run, transaction } from './db.js';
 import { AppError, handleRouteError, sendError } from './errors.js';
 import { validateWagonChecksum, normalizeWagonNumber, isStoredWagonNumber } from './wagonUtils.js';
 import { parseExcelBuffer, parseTextContent, parseWordBuffer, type ParsePayload } from './parsers.js';
@@ -63,24 +64,24 @@ function applyCors(app: express.Express): void {
   });
 }
 
-export function createApiApp(): express.Express {
-  getDb();
+export async function createApiApp(): Promise<express.Express> {
+  await initDatabase();
   const app = express();
   applyCors(app);
   app.use(express.json({ limit: `${config.maxUploadMb}mb` }));
   app.use(express.urlencoded({ extended: true, limit: `${config.maxUploadMb}mb` }));
 
-  app.get('/api/health', (_req, res) => {
-    res.json({ status: 'ok', app: 'RST', env: config.appEnv });
+  app.get('/api/health', async (_req, res) => {
+    res.json({ status: 'ok', app: 'RST', env: config.appEnv, db: getBackendDriver() });
   });
 
-  app.post('/api/wagons/check-digit', (req, res) => {
+  app.post('/api/wagons/check-digit', async (req, res) => {
     res.json(validateWagonChecksum(String(req.body?.wagon_number || '')));
   });
 
-  app.get('/api/product-types', (_req, res) => {
-    const types = query<Record<string, unknown>>('SELECT * FROM product_types ORDER BY name ASC');
-    const routeAgg = query<{
+  app.get('/api/product-types', async (_req, res) => {
+    const types = await query<Record<string, unknown>>('SELECT * FROM product_types ORDER BY name ASC');
+    const routeAgg = await query<{
       product_type_id: number;
       active_routes_count: number;
       total_wagons_count: number;
@@ -94,7 +95,7 @@ export function createApiApp(): express.Express {
        WHERE status IN ('ACTIVE', 'PARTIAL', 'HAS_DISCREPANCIES')
        GROUP BY product_type_id`,
     );
-    const discAgg = query<{ product_type_id: number; count: number }>(
+    const discAgg = await query<{ product_type_id: number; count: number }>(
       `SELECT r.product_type_id, COUNT(d.id) as count
        FROM discrepancies d
        JOIN routes r ON r.id = d.route_id
@@ -118,42 +119,42 @@ export function createApiApp(): express.Express {
     res.json(items);
   });
 
-  app.post('/api/product-types', (req, res) => {
+  app.post('/api/product-types', async (req, res) => {
     const name = String(req.body?.name || '').trim();
     if (!name) {
       sendError(res, 400, 'VALIDATION_ERROR', 'Название вида продукта обязательно');
       return;
     }
     const normalized = name.toLowerCase();
-    const existing = queryOne('SELECT id FROM product_types WHERE normalized_name = ?', [normalized]);
+    const existing = await queryOne('SELECT id FROM product_types WHERE normalized_name = ?', [normalized]);
     if (existing) {
       sendError(res, 400, 'VALIDATION_ERROR', 'Вид продукции с таким названием уже существует');
       return;
     }
     const now = nowIso();
-    const { lastInsertRowid } = run(
+    const { lastInsertRowid } = await run(
       'INSERT INTO product_types (name, normalized_name, is_active, created_at, updated_at) VALUES (?, ?, 1, ?, ?)',
       [name, normalized, now, now],
     );
-    res.json(queryOne('SELECT * FROM product_types WHERE id = ?', [lastInsertRowid]));
+    res.json(await queryOne('SELECT * FROM product_types WHERE id = ?', [lastInsertRowid]));
   });
 
-  app.put('/api/product-types/:id', (req, res) => {
+  app.put('/api/product-types/:id', async (req, res) => {
     const { id } = req.params;
     const now = nowIso();
     const { name, is_active } = req.body as { name?: string; is_active?: number };
     if (name) {
-      run(
+      await run(
         'UPDATE product_types SET name = ?, normalized_name = ?, is_active = ?, updated_at = ? WHERE id = ?',
         [name.trim(), name.trim().toLowerCase(), is_active !== undefined ? Number(is_active) : 1, now, id],
       );
     } else {
-      run('UPDATE product_types SET is_active = ?, updated_at = ? WHERE id = ?', [is_active ? 1 : 0, now, id]);
+      await run('UPDATE product_types SET is_active = ?, updated_at = ? WHERE id = ?', [is_active ? 1 : 0, now, id]);
     }
-    res.json(queryOne('SELECT * FROM product_types WHERE id = ?', [id]));
+    res.json(await queryOne('SELECT * FROM product_types WHERE id = ?', [id]));
   });
 
-  app.get('/api/product-grades', (req, res) => {
+  app.get('/api/product-grades', async (req, res) => {
     const { product_type_id } = req.query;
     let sql = 'SELECT pg.*, pt.name as product_type_name FROM product_grades pg JOIN product_types pt ON pt.id = pg.product_type_id';
     const params: unknown[] = [];
@@ -162,10 +163,10 @@ export function createApiApp(): express.Express {
       params.push(product_type_id);
     }
     sql += ' ORDER BY pg.name ASC';
-    res.json(query(sql, params));
+    res.json(await query(sql, params));
   });
 
-  app.post('/api/product-grades', (req, res) => {
+  app.post('/api/product-grades', async (req, res) => {
     const name = String(req.body?.name || '').trim();
     const productTypeId = Number(req.body?.product_type_id);
     if (!productTypeId || !name) {
@@ -173,7 +174,7 @@ export function createApiApp(): express.Express {
       return;
     }
     const normalized = name.toLowerCase();
-    const existing = queryOne(
+    const existing = await queryOne(
       'SELECT id FROM product_grades WHERE product_type_id = ? AND normalized_name = ?',
       [productTypeId, normalized],
     );
@@ -182,31 +183,31 @@ export function createApiApp(): express.Express {
       return;
     }
     const now = nowIso();
-    const { lastInsertRowid } = run(
+    const { lastInsertRowid } = await run(
       'INSERT INTO product_grades (product_type_id, name, normalized_name, is_active, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?)',
       [productTypeId, name, normalized, now, now],
     );
-    res.json(queryOne('SELECT * FROM product_grades WHERE id = ?', [lastInsertRowid]));
+    res.json(await queryOne('SELECT * FROM product_grades WHERE id = ?', [lastInsertRowid]));
   });
 
-  app.put('/api/product-grades/:id', (req, res) => {
+  app.put('/api/product-grades/:id', async (req, res) => {
     const { id } = req.params;
     const now = nowIso();
     const { name, is_active } = req.body as { name?: string; is_active?: number };
     if (name) {
-      run(
+      await run(
         'UPDATE product_grades SET name = ?, normalized_name = ?, is_active = ?, updated_at = ? WHERE id = ?',
         [name.trim(), name.trim().toLowerCase(), is_active !== undefined ? Number(is_active) : 1, now, id],
       );
     } else {
-      run('UPDATE product_grades SET is_active = ?, updated_at = ? WHERE id = ?', [is_active ? 1 : 0, now, id]);
+      await run('UPDATE product_grades SET is_active = ?, updated_at = ? WHERE id = ?', [is_active ? 1 : 0, now, id]);
     }
-    res.json(queryOne('SELECT * FROM product_grades WHERE id = ?', [id]));
+    res.json(await queryOne('SELECT * FROM product_grades WHERE id = ?', [id]));
   });
 
-  app.delete('/api/product-grades/:id', (req, res) => {
+  app.delete('/api/product-grades/:id', async (req, res) => {
     const { id } = req.params;
-    const used = queryOne(
+    const used = await queryOne(
       `SELECT id FROM routes WHERE product_grade_id = ?
        UNION SELECT id FROM terminal_lists WHERE product_grade_id = ?
        UNION SELECT id FROM wagon_events WHERE product_grade_id = ?
@@ -217,49 +218,49 @@ export function createApiApp(): express.Express {
       sendError(res, 409, 'CONFLICT', 'Марка используется. Удаление запрещено — можно только деактивировать.');
       return;
     }
-    run('DELETE FROM product_grades WHERE id = ?', [id]);
+    await run('DELETE FROM product_grades WHERE id = ?', [id]);
     res.json({ success: true });
   });
 
-  app.get('/api/stations', (_req, res) => {
-    res.json(query('SELECT * FROM stations ORDER BY name ASC'));
+  app.get('/api/stations', async (_req, res) => {
+    res.json(await query('SELECT * FROM stations ORDER BY name ASC'));
   });
 
-  app.post('/api/stations', (req, res) => {
+  app.post('/api/stations', async (req, res) => {
     const name = String(req.body?.name || '').trim();
     if (!name) {
       sendError(res, 400, 'VALIDATION_ERROR', 'Название станции обязательно');
       return;
     }
     const normalized = name.toLowerCase();
-    if (queryOne('SELECT id FROM stations WHERE normalized_name = ?', [normalized])) {
+    if (await queryOne('SELECT id FROM stations WHERE normalized_name = ?', [normalized])) {
       sendError(res, 400, 'VALIDATION_ERROR', 'Станция с таким названием уже существует');
       return;
     }
     const now = nowIso();
-    const { lastInsertRowid } = run(
+    const { lastInsertRowid } = await run(
       'INSERT INTO stations (name, normalized_name, is_active, created_at, updated_at) VALUES (?, ?, 1, ?, ?)',
       [name, normalized, now, now],
     );
-    res.json(queryOne('SELECT * FROM stations WHERE id = ?', [lastInsertRowid]));
+    res.json(await queryOne('SELECT * FROM stations WHERE id = ?', [lastInsertRowid]));
   });
 
-  app.put('/api/stations/:id', (req, res) => {
+  app.put('/api/stations/:id', async (req, res) => {
     const { id } = req.params;
     const now = nowIso();
     const { name, is_active } = req.body as { name?: string; is_active?: number };
     if (name) {
-      run(
+      await run(
         'UPDATE stations SET name = ?, normalized_name = ?, is_active = ?, updated_at = ? WHERE id = ?',
         [name.trim(), name.trim().toLowerCase(), is_active !== undefined ? Number(is_active) : 1, now, id],
       );
     } else {
-      run('UPDATE stations SET is_active = ?, updated_at = ? WHERE id = ?', [is_active ? 1 : 0, now, id]);
+      await run('UPDATE stations SET is_active = ?, updated_at = ? WHERE id = ?', [is_active ? 1 : 0, now, id]);
     }
-    res.json(queryOne('SELECT * FROM stations WHERE id = ?', [id]));
+    res.json(await queryOne('SELECT * FROM stations WHERE id = ?', [id]));
   });
 
-  app.get('/api/summary', (req, res) => {
+  app.get('/api/summary', async (req, res) => {
     const { product_type_id, product_grade_id, station_id } = req.query;
     let whereClause = "WHERE status != 'ARCHIVED'";
     const params: unknown[] = [];
@@ -276,9 +277,9 @@ export function createApiApp(): express.Express {
       params.push(station_id);
     }
 
-    const activeRoutes = queryOne<{ count: number }>(`SELECT COUNT(*) as count FROM routes ${whereClause}`, params)?.count || 0;
-    const totalWagons = queryOne<{ count: number }>(`SELECT COALESCE(SUM(wagon_count),0) as count FROM routes ${whereClause}`, params)?.count || 0;
-    const processedWagons = queryOne<{ count: number }>(`SELECT COALESCE(SUM(processed_count),0) as count FROM routes ${whereClause}`, params)?.count || 0;
+    const activeRoutes = (await queryOne<{ count: number }>(`SELECT COUNT(*) as count FROM routes ${whereClause}`, params))?.count || 0;
+    const totalWagons = (await queryOne<{ count: number }>(`SELECT COALESCE(SUM(wagon_count),0) as count FROM routes ${whereClause}`, params))?.count || 0;
+    const processedWagons = (await queryOne<{ count: number }>(`SELECT COALESCE(SUM(processed_count),0) as count FROM routes ${whereClause}`, params))?.count || 0;
 
     let wagonWhere = "WHERE r.status != 'ARCHIVED'";
     const wagonParams: unknown[] = [];
@@ -295,7 +296,7 @@ export function createApiApp(): express.Express {
       wagonParams.push(station_id);
     }
 
-    const statusCounts = query<{ terminal_status: string; cnt: number }>(
+    const statusCounts = await query<{ terminal_status: string; cnt: number }>(
       `SELECT rw.terminal_status, COUNT(*) as cnt
        FROM route_wagons rw JOIN routes r ON r.id = rw.route_id
        ${wagonWhere} GROUP BY rw.terminal_status`,
@@ -303,10 +304,10 @@ export function createApiApp(): express.Express {
     );
     const mapStatus = new Map(statusCounts.map((row) => [row.terminal_status, row.cnt]));
     const openDiscrepancies =
-      queryOne<{ count: number }>(
+      (await queryOne<{ count: number }>(
         `SELECT COUNT(d.id) as count FROM discrepancies d JOIN routes r ON r.id = d.route_id ${wagonWhere} AND d.status = 'OPEN'`,
         wagonParams,
-      )?.count || 0;
+      ))?.count || 0;
 
     res.json({
       active_routes_count: activeRoutes,
@@ -372,47 +373,47 @@ export function createApiApp(): express.Express {
     return { sql, params };
   }
 
-  app.get('/api/routes', (req, res) => {
+  app.get('/api/routes', async (req, res) => {
     const { page, limit, offset } = pagination(req.query);
     const filters = buildRouteFilters(req, false);
-    const total = queryOne<{ count: number }>(`SELECT COUNT(*) as count FROM routes r ${filters.sql}`, filters.params)?.count || 0;
-    const items = query(
+    const total = (await queryOne<{ count: number }>(`SELECT COUNT(*) as count FROM routes r ${filters.sql}`, filters.params))?.count || 0;
+    const items = await query(
       `${routeSelect} ${filters.sql} ORDER BY r.created_at DESC LIMIT ? OFFSET ?`,
       [...filters.params, limit, offset],
     );
     res.json(paged(items, total, page, limit));
   });
 
-  app.get('/api/archive', (req, res) => {
+  app.get('/api/archive', async (req, res) => {
     const { page, limit, offset } = pagination(req.query);
     const filters = buildRouteFilters(req, true);
-    const total = queryOne<{ count: number }>(`SELECT COUNT(*) as count FROM routes r ${filters.sql}`, filters.params)?.count || 0;
-    const items = query(
+    const total = (await queryOne<{ count: number }>(`SELECT COUNT(*) as count FROM routes r ${filters.sql}`, filters.params))?.count || 0;
+    const items = await query(
       `${routeSelect} ${filters.sql} ORDER BY r.archived_at DESC, r.updated_at DESC LIMIT ? OFFSET ?`,
       [...filters.params, limit, offset],
     );
     res.json(paged(items, total, page, limit));
   });
 
-  app.get('/api/routes/:id', (req, res) => {
+  app.get('/api/routes/:id', async (req, res) => {
     const { id } = req.params;
-    const route = queryOne<Record<string, unknown>>(`${routeSelect} WHERE r.id = ?`, [id]);
+    const route = await queryOne<Record<string, unknown>>(`${routeSelect} WHERE r.id = ?`, [id]);
     if (!route) {
       sendError(res, 404, 'NOT_FOUND', 'Маршрут не найден');
       return;
     }
 
-    const wagons = query<Record<string, unknown>>(
+    const wagons = await query<Record<string, unknown>>(
       `SELECT rw.*, w.wagon_number, w.is_checksum_valid
        FROM route_wagons rw JOIN wagons w ON w.id = rw.wagon_id
        WHERE rw.route_id = ? ORDER BY rw.sequence_no ASC, rw.id ASC`,
       [id],
     );
-    const discrepancies = query<Record<string, unknown>>(
+    const discrepancies = await query<Record<string, unknown>>(
       'SELECT * FROM discrepancies WHERE route_id = ? ORDER BY created_at DESC',
       [id],
     );
-    const termWeights = query<{ parsed_wagon_number: string; weight_kg: number | null }>(
+    const termWeights = await query<{ parsed_wagon_number: string; weight_kg: number | null }>(
       `SELECT tlr.parsed_wagon_number, tlr.weight_kg
        FROM terminal_list_rows tlr
        JOIN terminal_lists tl ON tl.id = tlr.terminal_list_id
@@ -433,7 +434,7 @@ export function createApiApp(): express.Express {
       terminal_weight_kg: weightMap.get(String(w.wagon_number)) ?? null,
       discrepancies: discMap.get(Number(w.wagon_id)) || [],
     }));
-    const terminalLists = query(
+    const terminalLists = await query(
       `SELECT tl.*, pt.name as product_type_name,
               (SELECT COUNT(*) FROM terminal_list_rows tlr WHERE tlr.terminal_list_id = tl.id) as rows_count
        FROM terminal_lists tl JOIN product_types pt ON pt.id = tl.product_type_id
@@ -443,8 +444,8 @@ export function createApiApp(): express.Express {
     res.json({ ...route, wagons: enrichedWagons, discrepancies, terminal_lists: terminalLists });
   });
 
-  app.get('/api/routes/:id/summary', (req, res) => {
-    const route = queryOne(`${routeSelect} WHERE r.id = ?`, [req.params.id]);
+  app.get('/api/routes/:id/summary', async (req, res) => {
+    const route = await queryOne(`${routeSelect} WHERE r.id = ?`, [req.params.id]);
     if (!route) {
       sendError(res, 404, 'NOT_FOUND', 'Маршрут не найден');
       return;
@@ -454,7 +455,7 @@ export function createApiApp(): express.Express {
 
   app.post(
     '/api/routes',
-    asyncHandler((req, res) => {
+    asyncHandler(async (req, res) => {
       const { display_name, product_type_id, wagons } = req.body as {
         display_name?: string;
         product_type_id?: number;
@@ -468,8 +469,8 @@ export function createApiApp(): express.Express {
         sendError(res, 400, 'VALIDATION_ERROR', 'Перечень вагонов не может быть пустым');
         return;
       }
-      const created = transaction(() =>
-        createRouteRecord({
+      const created = await transaction(async () =>
+        await createRouteRecord({
           display_name,
           product_type_id: Number(product_type_id),
           product_grade_id: req.body.product_grade_id,
@@ -485,22 +486,22 @@ export function createApiApp(): express.Express {
 
   app.post(
     '/api/routes/:id/wagons',
-    asyncHandler((req, res) => {
+    asyncHandler(async (req, res) => {
       const wagons = req.body?.wagons;
       if (!Array.isArray(wagons) || wagons.length === 0) {
         sendError(res, 400, 'VALIDATION_ERROR', 'Перечень вагонов не может быть пустым');
         return;
       }
-      const updated = transaction(() => addWagonsToRoute(Number(req.params.id), wagons as IncomingWagon[]));
+      const updated = await transaction(async () => await addWagonsToRoute(Number(req.params.id), wagons as IncomingWagon[]));
       res.json(updated);
     }),
   );
 
   app.put(
     '/api/routes/:id',
-    asyncHandler((req, res) => {
+    asyncHandler(async (req, res) => {
       const { id } = req.params;
-      const current = queryOne<{ updated_at: string; product_type_id: number }>(
+      const current = await queryOne<{ updated_at: string; product_type_id: number }>(
         'SELECT * FROM routes WHERE id = ?',
         [id],
       );
@@ -514,7 +515,7 @@ export function createApiApp(): express.Express {
       }
       const gradeId = req.body.product_grade_id || null;
       if (gradeId) {
-        const grade = queryOne<{ product_type_id: number }>('SELECT product_type_id FROM product_grades WHERE id = ?', [
+        const grade = await queryOne<{ product_type_id: number }>('SELECT product_type_id FROM product_grades WHERE id = ?', [
           gradeId,
         ]);
         const typeId = Number(req.body.product_type_id || current.product_type_id);
@@ -524,8 +525,8 @@ export function createApiApp(): express.Express {
         }
       }
       const now = nowIso();
-      transaction(() => {
-        run(
+      await transaction(async () => {
+        await run(
           `UPDATE routes
            SET display_name = ?, product_type_id = ?, product_grade_id = ?, station_id = ?, route_date = ?, notes = ?, updated_at = ?
            WHERE id = ?`,
@@ -540,19 +541,19 @@ export function createApiApp(): express.Express {
             id,
           ],
         );
-        reconcileRoute(Number(id));
+        await reconcileRoute(Number(id));
       });
-      res.json(queryOne('SELECT * FROM routes WHERE id = ?', [id]));
+      res.json(await queryOne('SELECT * FROM routes WHERE id = ?', [id]));
     }),
   );
 
   app.put(
     '/api/routes/:id/wagons/:wagonId',
-    asyncHandler((req, res) => {
+    asyncHandler(async (req, res) => {
       const { id, wagonId } = req.params;
       const now = nowIso();
-      transaction(() => {
-        const row = queryOne<{ id: number; wagon_id: number }>(
+      await transaction(async () => {
+        const row = await queryOne<{ id: number; wagon_id: number }>(
           'SELECT id, wagon_id FROM route_wagons WHERE route_id = ? AND (id = ? OR wagon_id = ?)',
           [id, wagonId, wagonId],
         );
@@ -564,10 +565,10 @@ export function createApiApp(): express.Express {
           if (!isStoredWagonNumber(check.normalized)) {
             throw new AppError(400, 'VALIDATION_ERROR', check.errorReason || 'Неверный номер вагона');
           }
-          const saved = getOrCreateWagon(req.body.wagon_number, now);
+          const saved = await getOrCreateWagon(req.body.wagon_number, now);
           if (!saved) throw new AppError(400, 'VALIDATION_ERROR', 'Не удалось сохранить номер вагона');
           const newWagon = { id: saved.id };
-          const dup = queryOne(
+          const dup = await queryOne(
             'SELECT id FROM route_wagons WHERE route_id = ? AND wagon_id = ? AND id != ?',
             [id, newWagon.id, row.id],
           );
@@ -575,7 +576,7 @@ export function createApiApp(): express.Express {
           targetWagonId = newWagon.id;
         }
 
-        run(
+        await run(
           `UPDATE route_wagons
            SET wagon_id = ?, declared_weight_kg = ?, terminal_status = COALESCE(?, terminal_status), notes = ?, updated_at = ?
            WHERE id = ?`,
@@ -589,25 +590,25 @@ export function createApiApp(): express.Express {
           ],
         );
         if (req.body.terminal_status) {
-          run(
+          await run(
             `INSERT INTO wagon_events (wagon_id, route_id, event_type, event_at, created_at)
              VALUES (?, ?, 'MANUAL_CORRECTION', ?, ?)`,
             [targetWagonId, id, now, now],
           );
         }
-        reconcileRoute(Number(id));
+        await reconcileRoute(Number(id));
       });
       res.json({ success: true });
     }),
   );
 
-  app.post('/api/routes/:id/reconcile', (req, res) => {
-    const result = transaction(() => reconcileRoute(Number(req.params.id)));
+  app.post('/api/routes/:id/reconcile', async (req, res) => {
+    const result = await transaction(async () => await reconcileRoute(Number(req.params.id)));
     res.json(result);
   });
 
-  app.post('/api/routes/:id/close', (req, res) => {
-    const result = transaction(() => reconcileRoute(Number(req.params.id)));
+  app.post('/api/routes/:id/close', async (req, res) => {
+    const result = await transaction(async () => await reconcileRoute(Number(req.params.id)));
     if (result.status !== 'CLOSED') {
       sendError(
         res,
@@ -623,22 +624,22 @@ export function createApiApp(): express.Express {
 
   app.post(
     '/api/routes/:id/archive',
-    asyncHandler((req, res) => {
-      res.json(archiveRoute(Number(req.params.id)));
+    asyncHandler(async (req, res) => {
+      res.json(await archiveRoute(Number(req.params.id)));
     }),
   );
 
   app.post(
     '/api/routes/:id/unarchive',
-    asyncHandler((req, res) => {
-      res.json(transaction(() => unarchiveRoute(Number(req.params.id))));
+    asyncHandler(async (req, res) => {
+      res.json(await transaction(async () => await unarchiveRoute(Number(req.params.id))));
     }),
   );
 
-  app.get('/api/terminal-lists', (req, res) => {
+  app.get('/api/terminal-lists', async (req, res) => {
     const { page, limit, offset } = pagination(req.query);
-    const total = queryOne<{ count: number }>('SELECT COUNT(*) as count FROM terminal_lists')?.count || 0;
-    const items = query(
+    const total = (await queryOne<{ count: number }>('SELECT COUNT(*) as count FROM terminal_lists'))?.count || 0;
+    const items = await query(
       `SELECT tl.*, pt.name as product_type_name, pg.name as product_grade_name, s.name as station_name,
               r.display_name as route_display_name,
               (SELECT COUNT(*) FROM terminal_list_rows tlr WHERE tlr.terminal_list_id = tl.id) as rows_count
@@ -653,27 +654,27 @@ export function createApiApp(): express.Express {
     res.json(paged(items, total, page, limit));
   });
 
-  app.get('/api/terminal-lists/:id', (req, res) => {
-    const list = queryOne('SELECT * FROM terminal_lists WHERE id = ?', [req.params.id]);
+  app.get('/api/terminal-lists/:id', async (req, res) => {
+    const list = await queryOne('SELECT * FROM terminal_lists WHERE id = ?', [req.params.id]);
     if (!list) {
       sendError(res, 404, 'NOT_FOUND', 'Список терминала не найден');
       return;
     }
-    const rows = query(
+    const rows = await query(
       'SELECT * FROM terminal_list_rows WHERE terminal_list_id = ? ORDER BY source_row_no ASC, id ASC',
       [req.params.id],
     );
     res.json({ ...list, rows });
   });
 
-  app.post('/api/terminal-lists/match-candidates', (req, res) => {
+  app.post('/api/terminal-lists/match-candidates', async (req, res) => {
     const numbers = Array.isArray(req.body?.wagon_numbers) ? req.body.wagon_numbers : [];
-    res.json(matchRouteCandidates(numbers, req.body?.product_type_id));
+    res.json(await matchRouteCandidates(numbers, req.body?.product_type_id));
   });
 
   app.post(
     '/api/terminal-lists',
-    asyncHandler((req, res) => {
+    asyncHandler(async (req, res) => {
       if (!req.body?.product_type_id || !req.body?.operation_type) {
         sendError(res, 400, 'VALIDATION_ERROR', 'Вид продукции и тип операции обязательны');
         return;
@@ -682,8 +683,8 @@ export function createApiApp(): express.Express {
         sendError(res, 400, 'VALIDATION_ERROR', 'Список вагонов терминала пуст');
         return;
       }
-      const created = transaction(() =>
-        createTerminalListRecord({
+      const created = await transaction(async () =>
+        await createTerminalListRecord({
           route_id: req.body.route_id,
           product_type_id: Number(req.body.product_type_id),
           product_grade_id: req.body.product_grade_id,
@@ -702,27 +703,27 @@ export function createApiApp(): express.Express {
 
   app.post(
     '/api/terminal-lists/:id/confirm',
-    asyncHandler((req, res) => {
-      const result = transaction(() => confirmDraftTerminalList(Number(req.params.id)));
+    asyncHandler(async (req, res) => {
+      const result = await transaction(async () => await confirmDraftTerminalList(Number(req.params.id)));
       res.json(result);
     }),
   );
 
-  const wrapParse = (entityType: 'ROUTE' | 'TERMINAL_LIST', method: string, payload: ParsePayload) => {
-    const session = createImportSession(entityType, method, payload);
+  const wrapParse = async (entityType: 'ROUTE' | 'TERMINAL_LIST', method: string, payload: ParsePayload) => {
+    const session = await createImportSession(entityType, method, payload);
     return { ...payload, session_id: session.id, session };
   };
 
-  app.post('/api/imports/parse-text', (req, res) => {
+  app.post('/api/imports/parse-text', async (req, res) => {
     const parsed = parseTextContent(String(req.body?.text || ''));
     const entityType = req.body?.entity_type === 'TERMINAL_LIST' ? 'TERMINAL_LIST' : 'ROUTE';
-    res.json(wrapParse(entityType, 'TEXT', parsed));
+    res.json(await wrapParse(entityType, 'TEXT', parsed));
   });
 
   app.post(
     '/api/imports/excel',
     upload.single('file'),
-    asyncHandler((req, res) => {
+    asyncHandler(async (req, res) => {
       if (!req.file) {
         sendError(res, 400, 'VALIDATION_ERROR', 'Файл Excel не загружен');
         return;
@@ -733,7 +734,7 @@ export function createApiApp(): express.Express {
         weightCol: req.body?.weight_col !== undefined && req.body.weight_col !== '' ? Number(req.body.weight_col) : undefined,
       });
       const entityType = req.body?.entity_type === 'TERMINAL_LIST' ? 'TERMINAL_LIST' : 'ROUTE';
-      res.json(wrapParse(entityType, 'EXCEL', parsed));
+      res.json(await wrapParse(entityType, 'EXCEL', parsed));
     }),
   );
 
@@ -756,7 +757,7 @@ export function createApiApp(): express.Express {
         return;
       }
       const entityType = req.body?.entity_type === 'TERMINAL_LIST' ? 'TERMINAL_LIST' : 'ROUTE';
-      res.json(wrapParse(entityType, 'WORD', parsed));
+      res.json(await wrapParse(entityType, 'WORD', parsed));
     }),
   );
 
@@ -771,51 +772,51 @@ export function createApiApp(): express.Express {
       }
       const parsed = await parseImages(files);
       const entityType = req.body?.entity_type === 'TERMINAL_LIST' ? 'TERMINAL_LIST' : 'ROUTE';
-      res.json(wrapParse(entityType, 'IMAGE', parsed));
+      res.json(await wrapParse(entityType, 'IMAGE', parsed));
     }),
   );
 
   app.put(
     '/api/imports/:id/rows',
-    asyncHandler((req, res) => {
-      res.json(updateImportSessionRows(Number(req.params.id), req.body as ParsePayload));
+    asyncHandler(async (req, res) => {
+      res.json(await updateImportSessionRows(Number(req.params.id), req.body as ParsePayload));
     }),
   );
 
   app.post(
     '/api/imports/:id/confirm',
-    asyncHandler((req, res) => {
-      const created = transaction(() => confirmImportSession(Number(req.params.id), req.body || {}));
+    asyncHandler(async (req, res) => {
+      const created = await transaction(async () => await confirmImportSession(Number(req.params.id), req.body || {}));
       res.json(created);
     }),
   );
 
   app.post(
     '/api/imports/:id/cancel',
-    asyncHandler((req, res) => {
-      res.json(cancelImportSession(Number(req.params.id)));
+    asyncHandler(async (req, res) => {
+      res.json(await cancelImportSession(Number(req.params.id)));
     }),
   );
 
-  app.get('/api/search', (req, res) => {
+  app.get('/api/search', async (req, res) => {
     const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
     if (!q) {
       res.json({ routes: [], wagon: null });
       return;
     }
-    const matchingRoutes = query(
+    const matchingRoutes = await query(
       `${routeSelect} WHERE r.display_name LIKE ? OR r.internal_code LIKE ? ORDER BY r.created_at DESC LIMIT 20`,
       [`%${q}%`, `%${q}%`],
     );
     const normWagon = normalizeWagonNumber(q);
     let wagonResult: unknown = null;
     if (isStoredWagonNumber(normWagon)) {
-      const wagonObj = queryOne<{ id: number; wagon_number: string; is_checksum_valid: number }>(
+      const wagonObj = await queryOne<{ id: number; wagon_number: string; is_checksum_valid: number }>(
         'SELECT * FROM wagons WHERE wagon_number = ?',
         [normWagon],
       );
       if (wagonObj) {
-        const wagonRoutes = query(
+        const wagonRoutes = await query(
           `SELECT r.id as route_id, r.internal_code, r.display_name, r.status as route_status,
                   pt.name as product_type_name, pg.name as product_grade_name, s.name as station_name,
                   rw.terminal_status, rw.declared_weight_kg, rw.notes
@@ -828,7 +829,7 @@ export function createApiApp(): express.Express {
            ORDER BY r.created_at DESC`,
           [wagonObj.id],
         );
-        const wagonEvents = query(
+        const wagonEvents = await query(
           `SELECT we.*, r.display_name as route_display_name
            FROM wagon_events we LEFT JOIN routes r ON r.id = we.route_id
            WHERE we.wagon_id = ? ORDER BY we.created_at DESC`,
