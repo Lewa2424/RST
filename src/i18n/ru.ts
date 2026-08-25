@@ -3,7 +3,7 @@ export const ru = {
   appFull: 'Учёт и сверка железнодорожных маршрутов',
   footerNote: 'Контрольная цифра • Excel • Word • фото',
   nav: {
-    products: 'Продукты',
+    products: 'Главная',
     routes: 'Маршруты',
     lists: 'Списки',
     search: 'Поиск',

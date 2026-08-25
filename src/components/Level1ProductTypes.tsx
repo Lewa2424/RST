@@ -19,16 +19,6 @@ export const Level1ProductTypes: React.FC<Props> = ({
 }) => {
   return (
     <div className="space-y-5">
-      <div className="card p-5 flex flex-col sm:flex-row sm:items-end justify-between gap-4">
-        <div>
-          <h1 className="text-2xl">{ru.level1.title}</h1>
-          <p className="text-[var(--muted)] mt-1">{ru.level1.subtitle}</p>
-        </div>
-        <button type="button" className="btn btn-primary self-start" onClick={onOpenAddProductTypeModal}>
-          <Plus className="w-4 h-4" /> {ru.level1.addType}
-        </button>
-      </div>
-
       {loading ? (
         <LoadingState label={ru.level1.loading} skeletons={2} />
       ) : (
