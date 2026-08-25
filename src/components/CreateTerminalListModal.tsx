@@ -8,6 +8,7 @@ import { X, Pencil, Trash2 } from 'lucide-react';
 import { ru } from '../i18n/ru';
 import { api, asParseRows, ApiError } from '../api';
 import { formatWagonNumber } from '../../server/wagonUtils';
+import { defaultTerminalListName, todayIsoDate } from '../utils/terminalListName';
 
 interface Props {
   isOpen: boolean;
@@ -16,19 +17,21 @@ interface Props {
   stations: Station[];
   routes: Route[];
   preSelectedRouteId?: number | null;
+  initialProductTypeId?: number | null;
   onSuccess: (newList: unknown) => void;
 }
 
 export const CreateTerminalListModal: React.FC<Props> = ({
-  isOpen, onClose, productTypes, stations, routes, preSelectedRouteId, onSuccess,
+  isOpen, onClose, productTypes, stations, routes, preSelectedRouteId, initialProductTypeId, onSuccess,
 }) => {
   const [step, setStep] = useState<1 | 2>(1);
   const [displayName, setDisplayName] = useState('');
+  const [nameTouched, setNameTouched] = useState(false);
   const [productTypeId, setProductTypeId] = useState(productTypes[0]?.id ?? 1);
   const [stationId, setStationId] = useState<number | null>(null);
   const [routeId, setRouteId] = useState<number | null>(preSelectedRouteId || null);
   const [operationType, setOperationType] = useState('UNLOADING');
-  const [listDate, setListDate] = useState(new Date().toISOString().split('T')[0]);
+  const [listDate, setListDate] = useState(todayIsoDate());
   const [importMethod, setImportMethod] = useState<'MANUAL' | 'EXCEL' | 'WORD' | 'IMAGE'>('MANUAL');
   const [manualText, setManualText] = useState('');
   const [isParsing, setIsParsing] = useState(false);
@@ -40,8 +43,27 @@ export const CreateTerminalListModal: React.FC<Props> = ({
   const [pages, setPages] = useState<ImagePage[]>([]);
 
   useEffect(() => {
-    if (isOpen) setRouteId(preSelectedRouteId || null);
-  }, [isOpen, preSelectedRouteId]);
+    if (!isOpen) return;
+    const today = todayIsoDate();
+    setStep(1);
+    setRouteId(preSelectedRouteId || null);
+    setProductTypeId(initialProductTypeId ?? productTypes[0]?.id ?? 1);
+    setListDate(today);
+    setOperationType('UNLOADING');
+    setNameTouched(false);
+    setDisplayName(defaultTerminalListName('UNLOADING', today));
+    setManualText('');
+    setPreviewRows([]);
+    setCandidates([]);
+    setParseError(null);
+    setPages([]);
+    setImportMethod('MANUAL');
+  }, [isOpen, preSelectedRouteId, initialProductTypeId, productTypes]);
+
+  useEffect(() => {
+    if (!isOpen || nameTouched) return;
+    setDisplayName(defaultTerminalListName(operationType, listDate));
+  }, [isOpen, operationType, listDate, nameTouched]);
 
   if (!isOpen) return null;
   const waitLabel = isSubmitting
@@ -115,7 +137,8 @@ export const CreateTerminalListModal: React.FC<Props> = ({
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           route_id: routeId, product_type_id: productTypeId, station_id: stationId,
-          display_name: displayName, operation_type: operationType, list_date: listDate, import_method: importMethod,
+          display_name: displayName.trim() || defaultTerminalListName(operationType, listDate),
+          operation_type: operationType, list_date: listDate, import_method: importMethod,
           confirm_now: true, rows: previewRows,
         }),
       });
@@ -172,12 +195,20 @@ export const CreateTerminalListModal: React.FC<Props> = ({
                   </select>
                 </div>
                 <div>
-                  <label className="lbl">{ru.createRoute.date}</label>
+                  <label className="lbl">{ru.createList.date}</label>
                   <input type="date" className="field" value={listDate} onChange={(e) => setListDate(e.target.value)} />
                 </div>
                 <div className="sm:col-span-2">
                   <label className="lbl">{ru.createList.name}</label>
-                  <input className="field" value={displayName} onChange={(e) => setDisplayName(e.target.value)} />
+                  <input
+                    className="field"
+                    value={displayName}
+                    onChange={(e) => {
+                      setNameTouched(true);
+                      setDisplayName(e.target.value);
+                    }}
+                  />
+                  <p className="text-xs text-[var(--muted)] mt-1">{ru.createList.nameHint}</p>
                 </div>
               </div>
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">

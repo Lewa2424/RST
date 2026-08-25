@@ -38,6 +38,7 @@ export function App() {
   const [isCreateRouteOpen, setIsCreateRouteOpen] = useState(false);
   const [appendWagonsRouteId, setAppendWagonsRouteId] = useState<number | null>(null);
   const [isCreateTerminalListOpen, setIsCreateTerminalListOpen] = useState(false);
+  const [inspectorListsRefreshKey, setInspectorListsRefreshKey] = useState(0);
   const [editingWagon, setEditingWagon] = useState<RouteWagon | null>(null);
 
   const showToast = (msg: string) => {
@@ -208,6 +209,7 @@ export function App() {
           <InspectorView
             productTypes={productTypes}
             routes={routes}
+            listsRefreshKey={inspectorListsRefreshKey}
             onOpenCreateTerminalList={() => setIsCreateTerminalListOpen(true)}
             onSelectRoute={(id) => fetchRouteDetail(id)}
             onStatusChanged={refreshAll}
@@ -275,7 +277,12 @@ export function App() {
         stations={stations}
         routes={routes}
         preSelectedRouteId={selectedRouteDetail?.id}
-        onSuccess={() => { showToast(ru.toast.saved); refreshAll(); }}
+        initialProductTypeId={selectedProductType?.id}
+        onSuccess={() => {
+          showToast(ru.toast.saved);
+          refreshAll();
+          setInspectorListsRefreshKey((k) => k + 1);
+        }}
       />
       {editingWagon && selectedRouteDetail && (
         <PencilEditModal

@@ -32,6 +32,15 @@ export const Header: React.FC<HeaderProps> = ({
     }
   };
 
+  const tabLabels: Record<AppTab, string> = {
+    home: ru.nav.products,
+    routes: ru.nav.routes,
+    inspector: ru.nav.inspector,
+    search: ru.nav.search,
+    archive: ru.nav.archive,
+    references: ru.nav.references,
+  };
+
   const navBtn = (tab: AppTab, label: string) => (
     <button
       type="button"
@@ -39,7 +48,7 @@ export const Header: React.FC<HeaderProps> = ({
         setActiveTab(tab);
         setOpen(false);
       }}
-      className={`btn tap ${activeTab === tab ? 'btn-primary' : 'btn-ghost'}`}
+      className={`btn tap shrink-0 ${activeTab === tab ? 'btn-primary' : 'btn-ghost'}`}
       aria-current={activeTab === tab ? 'page' : undefined}
     >
       {label}
@@ -59,13 +68,18 @@ export const Header: React.FC<HeaderProps> = ({
           </span>
         </button>
 
-        <nav className="hidden md:flex items-center gap-1 ml-4" aria-label="Основное меню">
+        <nav className="hidden lg:flex items-center gap-1 ml-4 shrink-0" aria-label="Основное меню">
           {navBtn('home', ru.nav.products)}
           {navBtn('routes', ru.nav.routes)}
           {navBtn('inspector', ru.nav.inspector)}
+          {navBtn('search', ru.nav.search)}
           {navBtn('archive', ru.nav.archive)}
           {navBtn('references', ru.nav.references)}
         </nav>
+
+        <span className="lg:hidden ml-1 text-sm font-semibold text-[var(--muted)] truncate max-w-[38vw]">
+          {tabLabels[activeTab]}
+        </span>
 
         <div className="ml-auto flex items-center gap-2">
           <form onSubmit={handleSearchSubmit} className="hidden sm:block relative">
@@ -85,7 +99,7 @@ export const Header: React.FC<HeaderProps> = ({
           </button>
           <button
             type="button"
-            className="btn btn-secondary md:hidden"
+            className="btn btn-secondary lg:hidden"
             aria-label={ru.nav.menu}
             aria-expanded={open}
             onClick={() => setOpen((v) => !v)}
@@ -96,7 +110,7 @@ export const Header: React.FC<HeaderProps> = ({
       </div>
 
       {open && (
-        <div className="md:hidden border-t border-[var(--line)] px-4 py-3 space-y-2 bg-[var(--panel)]">
+        <div className="lg:hidden border-t border-[var(--line)] px-4 py-3 space-y-2 bg-[var(--panel)]">
           <div className="grid grid-cols-2 gap-2">
             {navBtn('home', ru.nav.products)}
             {navBtn('routes', ru.nav.routes)}
@@ -111,26 +125,6 @@ export const Header: React.FC<HeaderProps> = ({
           </form>
         </div>
       )}
-
-      <nav className="md:hidden flex overflow-x-auto gap-1 px-3 pb-2" aria-label="Мобильная навигация">
-        {[
-          ['home', ru.nav.products],
-          ['routes', ru.nav.routes],
-          ['inspector', ru.nav.inspector],
-          ['search', ru.nav.search],
-          ['archive', ru.nav.archive],
-          ['references', ru.nav.references],
-        ].map(([tab, label]) => (
-          <button
-            key={tab}
-            type="button"
-            onClick={() => setActiveTab(tab as AppTab)}
-            className={`btn whitespace-nowrap ${activeTab === tab ? 'btn-primary' : 'btn-ghost'}`}
-          >
-            {label}
-          </button>
-        ))}
-      </nav>
     </header>
   );
 };

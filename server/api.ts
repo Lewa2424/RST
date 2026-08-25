@@ -19,6 +19,7 @@ import {
   createRouteRecord,
   createTerminalListRecord,
   getOrCreateWagon,
+  getTerminalListDetail,
   matchRouteCandidates,
   unarchiveRoute,
   pagination,
@@ -651,7 +652,21 @@ export async function createApiApp(): Promise<express.Express> {
 
   app.get('/api/terminal-lists', async (req, res) => {
     const { page, limit, offset } = pagination(req.query);
-    const total = (await queryOne<{ count: number }>('SELECT COUNT(*) as count FROM terminal_lists'))?.count || 0;
+    const productTypeId = req.query.product_type_id ? Number(req.query.product_type_id) : null;
+    const status = req.query.status ? String(req.query.status) : null;
+    const where: string[] = [];
+    const params: unknown[] = [];
+    if (productTypeId) {
+      where.push('tl.product_type_id = ?');
+      params.push(productTypeId);
+    }
+    if (status) {
+      where.push('tl.status = ?');
+      params.push(status);
+    }
+    const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+    const total =
+      (await queryOne<{ count: number }>(`SELECT COUNT(*) as count FROM terminal_lists tl ${whereSql}`, params))?.count || 0;
     const items = await query(
       `SELECT tl.*, pt.name as product_type_name, pg.name as product_grade_name, s.name as station_name,
               r.display_name as route_display_name,
@@ -661,23 +676,20 @@ export async function createApiApp(): Promise<express.Express> {
        LEFT JOIN product_grades pg ON pg.id = tl.product_grade_id
        LEFT JOIN stations s ON s.id = tl.station_id
        LEFT JOIN routes r ON r.id = tl.route_id
+       ${whereSql}
        ORDER BY tl.created_at DESC LIMIT ? OFFSET ?`,
-      [limit, offset],
+      [...params, limit, offset],
     );
     res.json(paged(items, total, page, limit));
   });
 
   app.get('/api/terminal-lists/:id', async (req, res) => {
-    const list = await queryOne('SELECT * FROM terminal_lists WHERE id = ?', [req.params.id]);
-    if (!list) {
+    const detail = await getTerminalListDetail(Number(req.params.id));
+    if (!detail) {
       sendError(res, 404, 'NOT_FOUND', 'Список терминала не найден');
       return;
     }
-    const rows = await query(
-      'SELECT * FROM terminal_list_rows WHERE terminal_list_id = ? ORDER BY source_row_no ASC, id ASC',
-      [req.params.id],
-    );
-    res.json({ ...list, rows });
+    res.json(detail);
   });
 
   app.post('/api/terminal-lists/match-candidates', async (req, res) => {

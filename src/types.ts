@@ -153,6 +153,13 @@ export interface TerminalListRow {
   created_at: string;
 }
 
+export interface TerminalListWorkboardRow extends TerminalListRow {
+  route_id?: number | null;
+  route_name?: string | null;
+  route_wagon_id?: number | null;
+  terminal_status?: string | null;
+}
+
 export interface Discrepancy {
   id: number;
   route_id: number;

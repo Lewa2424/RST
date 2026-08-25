@@ -12,6 +12,25 @@ export interface IncomingWagon {
   parsing_confidence?: number | null;
 }
 
+function formatRuDate(isoDate: string): string {
+  const [y, m, d] = isoDate.split('-');
+  if (!y || !m || !d) return isoDate;
+  return `${d}.${m}.${y}`;
+}
+
+const OPERATION_LABELS: Record<string, string> = {
+  UNLOADING: 'Прибытие',
+  CLEANING: 'Зачистка',
+  LOADING: 'Погрузка',
+  DEPARTURE_LOADED: 'Отправка гружёным',
+  DEPARTURE_EMPTY: 'Отправка пустым',
+};
+
+export function defaultTerminalListName(operationType: string, listDate: string): string {
+  const op = OPERATION_LABELS[operationType] || operationType;
+  return `${op} ${formatRuDate(listDate)}`;
+}
+
 function eventTypeForOperation(operationType: string): string {
   switch (operationType) {
     case 'UNLOADING':
@@ -207,7 +226,7 @@ export async function createTerminalListRecord(input: {
       input.product_type_id,
       input.product_grade_id || null,
       input.station_id || null,
-      input.display_name || `Список ${input.operation_type} ${new Date().toLocaleDateString('ru-RU')}`,
+      input.display_name || defaultTerminalListName(input.operation_type, input.list_date || now.split('T')[0]),
       input.operation_type,
       input.list_date || now.split('T')[0],
       input.import_method || 'MANUAL',
@@ -346,6 +365,98 @@ export async function confirmDraftTerminalList(listId: number): Promise<Record<s
   ]);
   await applyConfirmedList(listId);
   return { success: true, status: 'CONFIRMED' };
+}
+
+export async function getTerminalListDetail(listId: number): Promise<Record<string, unknown> | null> {
+  const list = await queryOne<{
+    id: number;
+    route_id: number | null;
+    product_type_id: number;
+    display_name: string | null;
+    operation_type: string;
+    list_date: string | null;
+    status: string;
+    created_at: string;
+    product_type_name?: string;
+    route_display_name?: string | null;
+    rows_count?: number;
+  }>(
+    `SELECT tl.*, pt.name as product_type_name, r.display_name as route_display_name,
+            (SELECT COUNT(*) FROM terminal_list_rows tlr WHERE tlr.terminal_list_id = tl.id) as rows_count
+     FROM terminal_lists tl
+     JOIN product_types pt ON pt.id = tl.product_type_id
+     LEFT JOIN routes r ON r.id = tl.route_id
+     WHERE tl.id = ?`,
+    [listId],
+  );
+  if (!list) return null;
+
+  const rows = await query<{
+    id: number;
+    wagon_id: number | null;
+    raw_wagon_number: string;
+    parsed_wagon_number: string | null;
+    weight_kg: number | null;
+    row_status: string;
+    source_row_no: number | null;
+  }>(
+    `SELECT id, wagon_id, raw_wagon_number, parsed_wagon_number, weight_kg, row_status, source_row_no
+     FROM terminal_list_rows WHERE terminal_list_id = ? ORDER BY source_row_no ASC, id ASC`,
+    [listId],
+  );
+
+  const enriched = [];
+  for (const row of rows) {
+    if (!row.wagon_id) {
+      enriched.push({
+        ...row,
+        route_id: null,
+        route_name: null,
+        route_wagon_id: null,
+        terminal_status: null,
+      });
+      continue;
+    }
+
+    const match = list.route_id
+      ? await queryOne<{
+          route_id: number;
+          route_name: string;
+          route_wagon_id: number;
+          terminal_status: string;
+        }>(
+          `SELECT r.id as route_id, r.display_name as route_name, rw.wagon_id as route_wagon_id, rw.terminal_status
+           FROM route_wagons rw
+           JOIN routes r ON r.id = rw.route_id
+           WHERE rw.route_id = ? AND rw.wagon_id = ?`,
+          [list.route_id, row.wagon_id],
+        )
+      : await queryOne<{
+          route_id: number;
+          route_name: string;
+          route_wagon_id: number;
+          terminal_status: string;
+        }>(
+          `SELECT r.id as route_id, r.display_name as route_name, rw.wagon_id as route_wagon_id, rw.terminal_status
+           FROM route_wagons rw
+           JOIN routes r ON r.id = rw.route_id
+           WHERE rw.wagon_id = ? AND r.product_type_id = ?
+             AND r.status IN ('ACTIVE', 'PARTIAL', 'HAS_DISCREPANCIES')
+           ORDER BY r.updated_at DESC
+           LIMIT 1`,
+          [row.wagon_id, list.product_type_id],
+        );
+
+    enriched.push({
+      ...row,
+      route_id: match?.route_id ?? null,
+      route_name: match?.route_name ?? null,
+      route_wagon_id: match?.route_wagon_id ?? null,
+      terminal_status: match?.terminal_status ?? null,
+    });
+  }
+
+  return { ...list, rows: enriched };
 }
 
 export async function matchRouteCandidates(wagonNumbers: string[], productTypeId?: number | null) {
