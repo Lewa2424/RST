@@ -1,0 +1,17 @@
+services:
+  rst:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      APP_ENV: production
+      DATABASE_PATH: /app/data/rst.sqlite
+      BACKUP_DIR: /app/backups
+      CORS_ORIGIN: http://localhost:3000
+    volumes:
+      - rst-data:/app/data
+      - rst-backups:/app/backups
+
+volumes:
+  rst-data:
+  rst-backups:

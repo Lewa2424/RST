@@ -1,0 +1,17 @@
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+.env
+.env.local
+.env*
+!.env.example
+data/
+backups/
+tmp-imports/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+rst_database.sqlite
