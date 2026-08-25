@@ -84,6 +84,12 @@ describe('route lifecycle', () => {
     expect(afterFull.processed_count).toBe(2);
     expect(afterFull.status).toBe('CLOSED');
 
+    const wagonStatuses = await query<{ terminal_status: string }>(
+      'SELECT terminal_status FROM route_wagons WHERE route_id = ?',
+      [routeId],
+    );
+    expect(wagonStatuses.every((w) => w.terminal_status === 'AT_TERMINAL')).toBe(true);
+
     const extras = await query(
       `SELECT type FROM discrepancies WHERE route_id = ? AND type = 'EXTRA_IN_TERMINAL_LIST' AND status = 'OPEN'`,
       [routeId],
@@ -163,6 +169,15 @@ describe('status filter', () => {
       'ACTIVE',
       'PARTIAL',
       'HAS_DISCREPANCIES',
+    ]);
+  });
+
+  it('expands ACTIVE_ALL to include CLOSED', () => {
+    expect(parseStatusFilter('ACTIVE_ALL')).toEqual([
+      'ACTIVE',
+      'PARTIAL',
+      'HAS_DISCREPANCIES',
+      'CLOSED',
     ]);
   });
 });

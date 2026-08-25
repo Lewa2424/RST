@@ -1,5 +1,5 @@
 import React from 'react';
-import { ProductType, Station, Route, GlobalSummaryMetrics } from '../types';
+import { ProductType, Station, Route } from '../types';
 import { RouteListTable } from './RouteListTable';
 import { ArrowLeft, Plus } from 'lucide-react';
 import { ru } from '../i18n/ru';
@@ -9,7 +9,6 @@ interface Props {
   stations: Station[];
   selectedStationId: number | null;
   setSelectedStationId: (id: number | null) => void;
-  summary: GlobalSummaryMetrics | null;
   routes: Route[];
   loadingRoutes: boolean;
   onBackToLevel1: () => void;
@@ -20,17 +19,11 @@ interface Props {
   onEditRoute?: (route: Route) => void;
 }
 
+const OPEN_STATUSES = new Set(['ACTIVE', 'PARTIAL', 'HAS_DISCREPANCIES']);
+
 export const Level2Dashboard: React.FC<Props> = (props) => {
-  const metrics = [
-    [ru.level2.metrics.routes, props.summary?.active_routes_count || 0],
-    [ru.level2.metrics.wagons, props.summary?.total_wagons_count || 0],
-    [ru.level2.metrics.pending, props.summary?.pending_wagons_count || 0, 'wait'],
-    [ru.level2.metrics.atTerminal, props.summary?.at_terminal_count || 0],
-    [ru.level2.metrics.unloaded, props.summary?.unloaded_count || 0, 'ok'],
-    [ru.level2.metrics.cleaned, props.summary?.cleaned_count || 0],
-    [ru.level2.metrics.loaded, props.summary?.loaded_count || 0],
-    [ru.level2.metrics.discrepancies, props.summary?.open_discrepancies_count || 0, 'err'],
-  ] as const;
+  const openRoutes = props.routes.filter((r) => OPEN_STATUSES.has(r.status));
+  const closedRoutes = props.routes.filter((r) => r.status === 'CLOSED');
 
   return (
     <div className="space-y-4">
@@ -41,7 +34,7 @@ export const Level2Dashboard: React.FC<Props> = (props) => {
           </button>
           <div>
             <h1 className="text-2xl">{props.selectedProductType.name}</h1>
-            <p className="text-sm text-[var(--muted)]">{ru.appFull}</p>
+            <p className="text-sm text-[var(--muted)]">{ru.level2.subtitle}</p>
           </div>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -74,26 +67,30 @@ export const Level2Dashboard: React.FC<Props> = (props) => {
         </div>
       </div>
 
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-        {metrics.map(([label, value, tone]) => (
-          <div key={label} className="card card-metric p-3">
-            <div className="text-xs text-[var(--muted)]">{label}</div>
-            <div className={`text-xl font-semibold ${tone === 'wait' ? 'text-[var(--wait)]' : tone === 'ok' ? 'text-[var(--ok)]' : tone === 'err' ? 'text-[var(--err)]' : ''}`}>
-              {value}
-            </div>
-          </div>
-        ))}
-      </div>
-
       <div className="card p-4">
-        <h2 className="text-lg mb-3">{ru.level2.activeRoutes}</h2>
+        <h2 className="text-lg mb-3">{ru.level2.openRoutes}</h2>
         <RouteListTable
-          routes={props.routes}
+          routes={openRoutes}
           loading={props.loadingRoutes}
           onSelectRoute={props.onSelectRoute}
           onEditRoute={props.onEditRoute}
+          emptyTitle={ru.routes.emptyOpen}
+          emptyHint={closedRoutes.length > 0 ? ru.routes.emptyOpenWithClosed : ru.routes.emptyHint}
         />
       </div>
+
+      {closedRoutes.length > 0 && (
+        <div className="card p-4">
+          <h2 className="text-lg mb-1">{ru.level2.closedRoutes}</h2>
+          <p className="text-sm text-[var(--muted)] mb-3">{ru.level2.closedHint}</p>
+          <RouteListTable
+            routes={closedRoutes}
+            loading={false}
+            onSelectRoute={props.onSelectRoute}
+            onEditRoute={props.onEditRoute}
+          />
+        </div>
+      )}
     </div>
   );
 };

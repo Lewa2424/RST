@@ -15,7 +15,8 @@ export interface IncomingWagon {
 function eventTypeForOperation(operationType: string): string {
   switch (operationType) {
     case 'UNLOADING':
-      return 'UNLOADED';
+      // List confirmation = arrival on terminal.
+      return 'AT_TERMINAL';
     case 'CLEANING':
       return 'CLEANED';
     case 'LOADING':

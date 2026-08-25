@@ -59,10 +59,14 @@ export const Level1ProductTypes: React.FC<Props> = ({
                     <dd className="text-xl font-semibold">{pt.active_routes_count || 0}</dd>
                   </div>
                   <div className="bg-[var(--paper)] rounded-lg p-3">
+                    <dt className="text-[var(--muted)]">{ru.level1.closed}</dt>
+                    <dd className="text-xl font-semibold">{pt.closed_routes_count || 0}</dd>
+                  </div>
+                  <div className="bg-[var(--paper)] rounded-lg p-3">
                     <dt className="text-[var(--muted)]">{ru.level1.wagons}</dt>
                     <dd className="text-xl font-semibold">{pt.total_wagons_count || 0}</dd>
                   </div>
-                  <div className="col-span-2 flex justify-between bg-[var(--wait-soft)] rounded-lg p-3">
+                  <div className="bg-[var(--wait-soft)] rounded-lg p-3">
                     <dt className="text-[var(--wait)]">{ru.level1.pending}</dt>
                     <dd className="font-semibold text-[var(--wait)]">{pt.unprocessed_wagons_count || 0}</dd>
                   </div>

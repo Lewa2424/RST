@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Train, Search, Plus, Menu, X } from 'lucide-react';
 import { ru } from '../i18n/ru';
 
-export type AppTab = 'home' | 'routes' | 'search' | 'archive' | 'references';
+export type AppTab = 'home' | 'routes' | 'search' | 'archive' | 'references' | 'inspector';
 
 interface HeaderProps {
   activeTab: AppTab;
@@ -62,6 +62,7 @@ export const Header: React.FC<HeaderProps> = ({
         <nav className="hidden md:flex items-center gap-1 ml-4" aria-label="Основное меню">
           {navBtn('home', ru.nav.products)}
           {navBtn('routes', ru.nav.routes)}
+          {navBtn('inspector', ru.nav.inspector)}
           {navBtn('archive', ru.nav.archive)}
           {navBtn('references', ru.nav.references)}
         </nav>
@@ -99,6 +100,7 @@ export const Header: React.FC<HeaderProps> = ({
           <div className="grid grid-cols-2 gap-2">
             {navBtn('home', ru.nav.products)}
             {navBtn('routes', ru.nav.routes)}
+            {navBtn('inspector', ru.nav.inspector)}
             {navBtn('search', ru.nav.search)}
             {navBtn('archive', ru.nav.archive)}
             {navBtn('references', ru.nav.references)}
@@ -114,6 +116,7 @@ export const Header: React.FC<HeaderProps> = ({
         {[
           ['home', ru.nav.products],
           ['routes', ru.nav.routes],
+          ['inspector', ru.nav.inspector],
           ['search', ru.nav.search],
           ['archive', ru.nav.archive],
           ['references', ru.nav.references],

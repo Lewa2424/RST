@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { ProductType, Station, Route, RouteWagon, GlobalSummaryMetrics, SearchWagonResult } from './types';
+import { ProductType, Station, Route, RouteWagon, SearchWagonResult } from './types';
 import { Header, type AppTab } from './components/Header';
 import { Level1ProductTypes } from './components/Level1ProductTypes';
 import { Level2Dashboard } from './components/Level2Dashboard';
@@ -9,6 +9,7 @@ import { CreateTerminalListModal } from './components/CreateTerminalListModal';
 import { GlobalSearchView } from './components/GlobalSearchView';
 import { ArchiveView } from './components/ArchiveView';
 import { ReferenceDataManager } from './components/ReferenceDataManager';
+import { InspectorView } from './components/InspectorView';
 import { PencilEditModal } from './components/PencilEditModal';
 import { EditRouteModal } from './components/EditRouteModal';
 import { RouteListTable } from './components/RouteListTable';
@@ -25,7 +26,6 @@ export function App() {
   const [productTypes, setProductTypes] = useState<ProductType[]>([]);
   const [stations, setStations] = useState<Station[]>([]);
   const [routes, setRoutes] = useState<Route[]>([]);
-  const [summary, setSummary] = useState<GlobalSummaryMetrics | null>(null);
 
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<{ routes: Route[]; wagon: SearchWagonResult | null } | null>(null);
@@ -61,22 +61,11 @@ export function App() {
     }
   };
 
-  const fetchSummary = async () => {
-    const qs = new URLSearchParams();
-    if (selectedProductType) qs.set('product_type_id', String(selectedProductType.id));
-    if (selectedStationId) qs.set('station_id', String(selectedStationId));
-    try {
-      setSummary(await api<GlobalSummaryMetrics>(`/api/summary?${qs.toString()}`));
-    } catch {
-      /* summary is non-blocking */
-    }
-  };
-
   const fetchRoutes = async () => {
     try {
       setLoadingRoutes(true);
       const qs = new URLSearchParams();
-      qs.set('status', 'ACTIVE,PARTIAL,HAS_DISCREPANCIES');
+      qs.set('status', 'ACTIVE_ALL');
       if (selectedProductType) qs.set('product_type_id', String(selectedProductType.id));
       if (selectedStationId) qs.set('station_id', String(selectedStationId));
       const data = await api(`/api/routes?${qs.toString()}`);
@@ -89,7 +78,7 @@ export function App() {
   };
 
   useEffect(() => { fetchInitialData(); }, []);
-  useEffect(() => { fetchRoutes(); fetchSummary(); }, [selectedProductType, selectedStationId]);
+  useEffect(() => { fetchRoutes(); }, [selectedProductType, selectedStationId]);
 
   const fetchRouteDetail = async (routeId: number) => {
     try {
@@ -115,7 +104,6 @@ export function App() {
   const refreshAll = () => {
     fetchRoutes();
     fetchInitialData();
-    fetchSummary();
     if (selectedRouteDetail) fetchRouteDetail(selectedRouteDetail.id);
   };
 
@@ -216,6 +204,14 @@ export function App() {
               }
             }}
           />
+        ) : activeTab === 'inspector' ? (
+          <InspectorView
+            productTypes={productTypes}
+            routes={routes}
+            onOpenCreateTerminalList={() => setIsCreateTerminalListOpen(true)}
+            onSelectRoute={(id) => fetchRouteDetail(id)}
+            onStatusChanged={refreshAll}
+          />
         ) : activeTab === 'references' ? (
           <ReferenceDataManager productTypes={productTypes} stations={stations} onRefreshData={fetchInitialData} />
         ) : activeTab === 'routes' && !selectedProductType ? (
@@ -229,7 +225,6 @@ export function App() {
             stations={stations}
             selectedStationId={selectedStationId}
             setSelectedStationId={setSelectedStationId}
-            summary={summary}
             routes={routes}
             loadingRoutes={loadingRoutes}
             onBackToLevel1={() => setSelectedProductType(null)}

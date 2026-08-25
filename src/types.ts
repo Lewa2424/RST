@@ -43,6 +43,7 @@ export interface ProductType {
   updated_at: string;
   // Computed metrics
   active_routes_count?: number;
+  closed_routes_count?: number;
   total_wagons_count?: number;
   unprocessed_wagons_count?: number;
   open_discrepancies_count?: number;
@@ -197,6 +198,7 @@ export interface ParsedRowCandidate {
 
 export interface GlobalSummaryMetrics {
   active_routes_count: number;
+  closed_routes_count?: number;
   total_wagons_count: number;
   pending_wagons_count: number;
   at_terminal_count: number;

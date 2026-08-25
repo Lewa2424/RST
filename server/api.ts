@@ -84,15 +84,17 @@ export async function createApiApp(): Promise<express.Express> {
     const routeAgg = await query<{
       product_type_id: number;
       active_routes_count: number;
+      closed_routes_count: number;
       total_wagons_count: number;
       processed_count: number;
     }>(
       `SELECT product_type_id,
-              COUNT(*) as active_routes_count,
-              COALESCE(SUM(wagon_count), 0) as total_wagons_count,
-              COALESCE(SUM(processed_count), 0) as processed_count
+              SUM(CASE WHEN status IN ('ACTIVE', 'PARTIAL', 'HAS_DISCREPANCIES') THEN 1 ELSE 0 END) as active_routes_count,
+              SUM(CASE WHEN status = 'CLOSED' THEN 1 ELSE 0 END) as closed_routes_count,
+              COALESCE(SUM(CASE WHEN status != 'ARCHIVED' THEN wagon_count ELSE 0 END), 0) as total_wagons_count,
+              COALESCE(SUM(CASE WHEN status != 'ARCHIVED' THEN processed_count ELSE 0 END), 0) as processed_count
        FROM routes
-       WHERE status IN ('ACTIVE', 'PARTIAL', 'HAS_DISCREPANCIES')
+       WHERE status IN ('ACTIVE', 'PARTIAL', 'HAS_DISCREPANCIES', 'CLOSED')
        GROUP BY product_type_id`,
     );
     const discAgg = await query<{ product_type_id: number; count: number }>(
@@ -111,6 +113,7 @@ export async function createApiApp(): Promise<express.Express> {
       return {
         ...pt,
         active_routes_count: agg?.active_routes_count || 0,
+        closed_routes_count: agg?.closed_routes_count || 0,
         total_wagons_count: total,
         unprocessed_wagons_count: Math.max(0, total - processed),
         open_discrepancies_count: discMap.get(Number(pt.id)) || 0,
@@ -277,7 +280,16 @@ export async function createApiApp(): Promise<express.Express> {
       params.push(station_id);
     }
 
-    const activeRoutes = (await queryOne<{ count: number }>(`SELECT COUNT(*) as count FROM routes ${whereClause}`, params))?.count || 0;
+    const activeRoutes =
+      (await queryOne<{ count: number }>(
+        `SELECT COUNT(*) as count FROM routes ${whereClause} AND status IN ('ACTIVE', 'PARTIAL', 'HAS_DISCREPANCIES')`,
+        params,
+      ))?.count || 0;
+    const closedRoutes =
+      (await queryOne<{ count: number }>(
+        `SELECT COUNT(*) as count FROM routes ${whereClause} AND status = 'CLOSED'`,
+        params,
+      ))?.count || 0;
     const totalWagons = (await queryOne<{ count: number }>(`SELECT COALESCE(SUM(wagon_count),0) as count FROM routes ${whereClause}`, params))?.count || 0;
     const processedWagons = (await queryOne<{ count: number }>(`SELECT COALESCE(SUM(processed_count),0) as count FROM routes ${whereClause}`, params))?.count || 0;
 
@@ -311,6 +323,7 @@ export async function createApiApp(): Promise<express.Express> {
 
     res.json({
       active_routes_count: activeRoutes,
+      closed_routes_count: closedRoutes,
       total_wagons_count: totalWagons,
       pending_wagons_count: Math.max(0, totalWagons - processedWagons),
       at_terminal_count: mapStatus.get('AT_TERMINAL') || 0,
@@ -614,7 +627,7 @@ export async function createApiApp(): Promise<express.Express> {
         res,
         409,
         'CONFLICT',
-        'Маршрут нельзя закрыть: не все вагоны выгружены или есть блокирующие расхождения.',
+        'Маршрут нельзя закрыть: не все вагоны на терминале или есть блокирующие расхождения.',
         result,
       );
       return;

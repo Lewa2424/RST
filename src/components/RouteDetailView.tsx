@@ -137,8 +137,8 @@ export const RouteDetailView: React.FC<Props> = ({
 
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
         <div className="card card-metric p-3"><div className="text-xs text-[var(--muted)]">Всего</div><div className="text-xl font-semibold">{route.wagon_count}</div></div>
-        <div className="card card-metric p-3"><div className="text-xs text-[var(--ok)]">Подтверждено</div><div className="text-xl font-semibold text-[var(--ok)]">{route.processed_count}</div></div>
-        <div className="card card-metric p-3"><div className="text-xs text-[var(--wait)]">Осталось</div><div className="text-xl font-semibold text-[var(--wait)]">{remaining}</div></div>
+        <div className="card card-metric p-3"><div className="text-xs text-[var(--ok)]">На терминале</div><div className="text-xl font-semibold text-[var(--ok)]">{route.processed_count}</div></div>
+        <div className="card card-metric p-3"><div className="text-xs text-[var(--wait)]">Ожидаются</div><div className="text-xl font-semibold text-[var(--wait)]">{remaining}</div></div>
         <div className="card card-metric p-3"><div className="text-xs text-[var(--err)]">Ошибки</div><div className="text-xl font-semibold text-[var(--err)]">{materialIssues.length}</div></div>
       </div>
 

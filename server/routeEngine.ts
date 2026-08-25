@@ -5,6 +5,9 @@ import {
   MATERIAL_DISCREPANCY_TYPES,
   computeRouteStatus,
   getWeightThresholdKg,
+  isOnTerminal,
+  maxTerminalStatus,
+  statusFromListOperation,
   type RouteStatus,
 } from './routeStatus.js';
 
@@ -191,35 +194,17 @@ export async function reconcileRoute(routeId: number): Promise<ReconcileResult> 
 
     const tRows = termMap.get(rw.wagon_number) ?? [];
     if (tRows.length > 0) {
-      let latestStatus = rw.terminal_status;
-      let isUnloaded = false;
+      let listStatus = 'AT_TERMINAL';
       let terminalWeight: number | null = null;
 
       for (const tr of tRows) {
         if (tr.weight_kg) terminalWeight = tr.weight_kg;
-        switch (tr.operation_type) {
-          case 'UNLOADING':
-            isUnloaded = true;
-            latestStatus = 'UNLOADED';
-            break;
-          case 'CLEANING':
-            latestStatus = 'CLEANED';
-            break;
-          case 'LOADING':
-            latestStatus = 'LOADED';
-            break;
-          case 'DEPARTURE_LOADED':
-            latestStatus = 'DEPARTED_LOADED';
-            break;
-          case 'DEPARTURE_EMPTY':
-            latestStatus = 'DEPARTED_EMPTY';
-            break;
-          default:
-            latestStatus = 'AT_TERMINAL';
-        }
+        listStatus = maxTerminalStatus(listStatus, statusFromListOperation(tr.operation_type));
       }
 
-      const isProcessed = isUnloaded ? 1 : 0;
+      // Do not regress inspector/manual progress when re-running list reconcile.
+      const latestStatus = maxTerminalStatus(rw.terminal_status, listStatus);
+      const isProcessed = isOnTerminal(latestStatus) ? 1 : 0;
       if (isProcessed) processedCount += 1;
 
       if (
