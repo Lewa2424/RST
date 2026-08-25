@@ -98,6 +98,24 @@ describe('parseLooseWagonText', () => {
     expect(rows[0].doubtful).toBe(false);
   });
 
+  it('parses comma-separated spaced UIC list without fake weights', () => {
+    const text =
+      '31 54 595 4888-1, 31 54 595 5578-7, 31 54 596 2775-0, 595 4888-1, 59548881, 315459548881';
+    const { rows } = parseLooseWagonText(text);
+    expect(rows).toHaveLength(6);
+    expect(rows.every((r) => r.normalized === '315459548881' || r.normalized === '315459555787' || r.normalized === '315459627750')).toBe(
+      true,
+    );
+    expect(rows.filter((r) => r.normalized === '315459548881')).toHaveLength(4);
+    expect(rows.every((r) => r.weight_kg == null)).toBe(true);
+    expect(rows.every((r) => r.doubtful === false)).toBe(true);
+  });
+
+  it('parses several 8-digit CIS numbers in one comma line', () => {
+    const { rows } = parseLooseWagonText('61136073, 53210452, 60814910');
+    expect(rows.map((r) => r.normalized)).toEqual(['61136073', '53210452', '60814910']);
+  });
+
   it('formats UIC for display', () => {
     expect(formatWagonNumber('315459490795')).toBe('31 54 5949 079-5');
   });

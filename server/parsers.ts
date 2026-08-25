@@ -68,8 +68,9 @@ export function parseTextContent(rawText: string): ParsePayload {
   const parsed = parseLooseWagonText(rawText);
   const rows = withDuplicates(
     parsed.rows.map((item) =>
-      toParsedRow(item.raw || item.normalized, item.sourceRowNo, item.weight_kg, {
+      toParsedRow(item.normalized || item.raw, item.sourceRowNo, item.weight_kg, {
         doubtful: item.doubtful,
+        raw_wagon_number: item.raw,
       }),
     ),
   );
