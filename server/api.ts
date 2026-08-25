@@ -18,9 +18,11 @@ import {
   createImportSession,
   createRouteRecord,
   createTerminalListRecord,
+  deleteTerminalListRecord,
   getOrCreateWagon,
   getTerminalListDetail,
   matchRouteCandidates,
+  updateTerminalListRecord,
   unarchiveRoute,
   pagination,
   parseStatusFilter,
@@ -730,6 +732,29 @@ export async function createApiApp(): Promise<express.Express> {
     '/api/terminal-lists/:id/confirm',
     asyncHandler(async (req, res) => {
       const result = await transaction(async () => await confirmDraftTerminalList(Number(req.params.id)));
+      res.json(result);
+    }),
+  );
+
+  app.put(
+    '/api/terminal-lists/:id',
+    asyncHandler(async (req, res) => {
+      const displayName = String(req.body?.display_name || '').trim();
+      if (!displayName) {
+        sendError(res, 400, 'VALIDATION_ERROR', 'Название списка обязательно');
+        return;
+      }
+      const updated = await transaction(async () =>
+        await updateTerminalListRecord(Number(req.params.id), { display_name: displayName }),
+      );
+      res.json(updated);
+    }),
+  );
+
+  app.delete(
+    '/api/terminal-lists/:id',
+    asyncHandler(async (req, res) => {
+      const result = await transaction(async () => await deleteTerminalListRecord(Number(req.params.id)));
       res.json(result);
     }),
   );

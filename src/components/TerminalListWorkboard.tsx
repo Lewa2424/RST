@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, Pencil, Trash2 } from 'lucide-react';
 import { TerminalList, TerminalListWorkboardRow, TerminalStatus } from '../types';
 import { ru } from '../i18n/ru';
 import { api, ApiError } from '../api';
@@ -25,6 +25,9 @@ interface Props {
   onSelectRoute: (routeId: number) => void;
   onStatusChanged: () => void;
   onReload: () => Promise<void>;
+  onRename: (displayName: string) => Promise<void>;
+  onDelete: () => Promise<void>;
+  actionBusy?: boolean;
 }
 
 export const TerminalListWorkboard: React.FC<Props> = ({
@@ -33,15 +36,38 @@ export const TerminalListWorkboard: React.FC<Props> = ({
   onSelectRoute,
   onStatusChanged,
   onReload,
+  onRename,
+  onDelete,
+  actionBusy = false,
 }) => {
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [rows, setRows] = useState(list.rows);
+  const [isRenaming, setIsRenaming] = useState(false);
+  const [renameValue, setRenameValue] = useState(list.display_name || `#${list.id}`);
 
   React.useEffect(() => {
     setRows(list.rows);
+    setRenameValue(list.display_name || `#${list.id}`);
+    setIsRenaming(false);
   }, [list]);
+
+  const submitRename = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const name = renameValue.trim();
+    if (!name) {
+      setError(ru.inspector.renameEmpty);
+      return;
+    }
+    setError(null);
+    try {
+      await onRename(name);
+      setIsRenaming(false);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : ru.errors.generic);
+    }
+  };
 
   const setStatus = async (row: TerminalListWorkboardRow, status: TerminalStatus) => {
     if (!row.route_id || !row.route_wagon_id) return;
@@ -73,13 +99,61 @@ export const TerminalListWorkboard: React.FC<Props> = ({
 
   return (
     <div className="space-y-4 relative">
-      {isSaving && <LoadingOverlay label={ru.inspector.saving} />}
+      {(isSaving || actionBusy) && <LoadingOverlay label={ru.inspector.saving} />}
 
       <div className="card p-4 space-y-2">
-        <button type="button" className="btn btn-ghost tap -ml-2" onClick={onBack}>
-          <ArrowLeft className="w-4 h-4" /> {ru.inspector.backToLists}
-        </button>
-        <h2 className="text-xl">{list.display_name || `#${list.id}`}</h2>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <button type="button" className="btn btn-ghost tap -ml-2" onClick={onBack}>
+            <ArrowLeft className="w-4 h-4" /> {ru.inspector.backToLists}
+          </button>
+          <div className="flex gap-1">
+            <button
+              type="button"
+              className="btn btn-ghost tap"
+              aria-label={ru.actions.edit}
+              disabled={actionBusy || isRenaming}
+              onClick={() => setIsRenaming(true)}
+            >
+              <Pencil className="w-4 h-4" />
+            </button>
+            <button
+              type="button"
+              className="btn btn-ghost tap"
+              aria-label={ru.actions.delete}
+              disabled={actionBusy}
+              onClick={() => onDelete()}
+            >
+              <Trash2 className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+        {isRenaming ? (
+          <form className="flex flex-wrap items-center gap-2" onSubmit={submitRename}>
+            <input
+              className="field flex-1 min-w-[12rem]"
+              value={renameValue}
+              onChange={(e) => setRenameValue(e.target.value)}
+              aria-label={ru.inspector.renamePrompt}
+              autoFocus
+            />
+            <button type="submit" className="btn btn-primary" disabled={actionBusy}>
+              {ru.actions.save}
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              disabled={actionBusy}
+              onClick={() => {
+                setIsRenaming(false);
+                setRenameValue(list.display_name || `#${list.id}`);
+              }}
+            >
+              {ru.actions.cancel}
+            </button>
+          </form>
+        ) : (
+          <h2 className="text-xl">{list.display_name || `#${list.id}`}</h2>
+        )}
         <p className="text-sm text-[var(--muted)]">
           {opLabel} · {list.list_date || '—'} · {rows.length} {ru.inspector.wagonsShort}
           {list.route_display_name ? ` · ${ru.inspector.route}: ${list.route_display_name}` : ''}

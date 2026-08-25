@@ -459,6 +459,35 @@ export async function getTerminalListDetail(listId: number): Promise<Record<stri
   return { ...list, rows: enriched };
 }
 
+export async function updateTerminalListRecord(
+  listId: number,
+  input: { display_name: string },
+): Promise<Record<string, unknown>> {
+  const list = await queryOne<{ id: number }>('SELECT id FROM terminal_lists WHERE id = ?', [listId]);
+  if (!list) throw new AppError(404, 'NOT_FOUND', 'Список терминала не найден');
+
+  const name = input.display_name?.trim();
+  if (!name) throw new AppError(400, 'VALIDATION_ERROR', 'Название списка обязательно');
+
+  const now = nowIso();
+  await run('UPDATE terminal_lists SET display_name = ?, updated_at = ? WHERE id = ?', [name, now, listId]);
+  return (await queryOne('SELECT * FROM terminal_lists WHERE id = ?', [listId])) as Record<string, unknown>;
+}
+
+export async function deleteTerminalListRecord(listId: number): Promise<{ success: true; id: number }> {
+  const list = await queryOne<{ id: number; route_id: number | null }>(
+    'SELECT id, route_id FROM terminal_lists WHERE id = ?',
+    [listId],
+  );
+  if (!list) throw new AppError(404, 'NOT_FOUND', 'Список терминала не найден');
+
+  await run('DELETE FROM terminal_lists WHERE id = ?', [listId]);
+  if (list.route_id) {
+    await reconcileRoute(list.route_id);
+  }
+  return { success: true, id: listId };
+}
+
 export async function matchRouteCandidates(wagonNumbers: string[], productTypeId?: number | null) {
   const normNumbers = wagonNumbers.map((w) => normalizeWagonNumber(w)).filter((n) => isStoredWagonNumber(n));
   if (normNumbers.length === 0) return [];

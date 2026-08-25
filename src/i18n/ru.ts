@@ -185,6 +185,11 @@ export const ru = {
     linkedSummary: 'Привязано к маршрутам: {linked} из {total}',
     noRouteForWagon: 'Не найден в открытом маршруте',
     bindRouteHint: 'Привяжите список к маршруту при создании или добавьте вагон в маршрут учётчика.',
+    confirmDelete: 'Удалить список «{name}»? Сверка связанного маршрута будет пересчитана.',
+    renamePrompt: 'Название списка',
+    renameEmpty: 'Введите название списка',
+    deleted: 'Список удалён',
+    renamed: 'Название сохранено',
     statuses: {
       AT_TERMINAL: 'Полный',
       UNLOADED: 'Выгружен',

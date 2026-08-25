@@ -6,8 +6,10 @@ import {
   archiveRoute,
   createRouteRecord,
   createTerminalListRecord,
+  deleteTerminalListRecord,
   parseStatusFilter,
   unarchiveRoute,
+  updateTerminalListRecord,
 } from '../server/domain';
 import { makeValidWagonNumber } from '../server/wagonUtils';
 import { createApiApp } from '../server/api';
@@ -217,5 +219,48 @@ describe('HTTP API', () => {
         server.close((err) => (err ? reject(err) : resolve()));
       });
     }
+  });
+});
+
+describe('terminal list maintenance', () => {
+  it('renames and deletes a terminal list and reconciles the route', async () => {
+    await setup();
+    const w1 = makeValidWagonNumber('6113607');
+    const route = await transaction(async () =>
+      createRouteRecord({
+        display_name: 'Список для удаления',
+        product_type_id: 1,
+        station_id: 1,
+        wagons: [{ parsed_wagon_number: w1, weight_kg: 68000 }],
+      }),
+    );
+    const routeId = Number(route.id);
+
+    const list = await transaction(async () =>
+      createTerminalListRecord({
+        route_id: routeId,
+        product_type_id: 1,
+        operation_type: 'UNLOADING',
+        display_name: 'Старое имя',
+        confirm_now: true,
+        rows: [{ parsed_wagon_number: w1, weight_kg: 68000 }],
+      }),
+    );
+    const listId = Number(list.id);
+
+    const renamed = await transaction(async () =>
+      updateTerminalListRecord(listId, { display_name: 'Новое имя' }),
+    );
+    expect(renamed.display_name).toBe('Новое имя');
+
+    await transaction(async () => deleteTerminalListRecord(listId));
+
+    const remaining = await query<{ id: number }>('SELECT id FROM terminal_lists WHERE id = ?', [listId]);
+    expect(remaining.length).toBe(0);
+
+    const routeRow = (
+      await query<{ processed_count: number }>('SELECT processed_count FROM routes WHERE id = ?', [routeId])
+    )[0];
+    expect(routeRow.processed_count).toBe(0);
   });
 });

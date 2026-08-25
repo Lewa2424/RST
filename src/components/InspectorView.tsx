@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { ProductType, Route, ParsedRowCandidate, TerminalStatus, TerminalList, TerminalListWorkboardRow } from '../types';
-import { Plus, ChevronRight } from 'lucide-react';
+import { Plus, ChevronRight, Pencil, Trash2 } from 'lucide-react';
 import { ru } from '../i18n/ru';
 import { api, asItems, asParseRows, ApiError } from '../api';
 import { formatWagonNumber } from '../../server/wagonUtils';
@@ -58,6 +58,62 @@ export const InspectorView: React.FC<Props> = ({
   const [selectedListId, setSelectedListId] = useState<number | null>(null);
   const [selectedList, setSelectedList] = useState<ListDetail | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
+  const [renamingId, setRenamingId] = useState<number | null>(null);
+  const [renameValue, setRenameValue] = useState('');
+  const [listActionBusy, setListActionBusy] = useState(false);
+
+  const renameList = async (listId: number, displayName: string) => {
+    const name = displayName.trim();
+    if (!name) {
+      const msg = ru.inspector.renameEmpty;
+      setError(msg);
+      throw new ApiError(msg, 400);
+    }
+    setListActionBusy(true);
+    setError(null);
+    try {
+      await api(`/api/terminal-lists/${listId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ display_name: name }),
+      });
+      setRenamingId(null);
+      setRenameValue('');
+      await loadLists();
+      if (selectedListId === listId) await loadListDetail(listId);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : ru.errors.generic);
+      throw err;
+    } finally {
+      setListActionBusy(false);
+    }
+  };
+
+  const deleteList = async (tl: TerminalList) => {
+    const label = tl.display_name || `#${tl.id}`;
+    if (!confirm(ru.inspector.confirmDelete.replace('{name}', label))) return;
+    setListActionBusy(true);
+    setError(null);
+    try {
+      await api(`/api/terminal-lists/${tl.id}`, { method: 'DELETE' });
+      if (selectedListId === tl.id) {
+        setSelectedListId(null);
+        setSelectedList(null);
+      }
+      setRenamingId(null);
+      await loadLists();
+      onStatusChanged();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : ru.errors.generic);
+    } finally {
+      setListActionBusy(false);
+    }
+  };
+
+  const startRename = (tl: TerminalList) => {
+    setRenamingId(tl.id);
+    setRenameValue(tl.display_name || `#${tl.id}`);
+  };
 
   const loadLists = useCallback(async () => {
     setIsLoadingLists(true);
@@ -223,6 +279,9 @@ export const InspectorView: React.FC<Props> = ({
         onReload={async () => {
           if (selectedListId) await loadListDetail(selectedListId);
         }}
+        onRename={(name) => renameList(selectedList.id, name)}
+        onDelete={() => deleteList(selectedList)}
+        actionBusy={listActionBusy}
       />
     );
   }
@@ -237,7 +296,7 @@ export const InspectorView: React.FC<Props> = ({
 
   return (
     <div className="space-y-4 relative">
-      {(isParsing || isSaving || isLoadingLists) && (
+      {(isParsing || isSaving || isLoadingLists || listActionBusy) && (
         <LoadingOverlay label={isParsing ? ru.loading.parse : isSaving ? ru.inspector.saving : ru.loading.load} />
       )}
 
@@ -281,23 +340,76 @@ export const InspectorView: React.FC<Props> = ({
           <ul className="space-y-2">
             {savedLists.map((tl) => {
               const opLabel = ru.status[tl.operation_type as keyof typeof ru.status] || tl.operation_type;
+              const label = tl.display_name || `#${tl.id}`;
               return (
-                <li key={tl.id}>
-                  <button
-                    type="button"
-                    className="w-full card-interactive card p-3 flex items-center justify-between gap-3 text-left"
-                    onClick={() => setSelectedListId(tl.id)}
-                  >
-                    <div>
-                      <div className="font-semibold">{tl.display_name || `#${tl.id}`}</div>
-                      <div className="text-sm text-[var(--muted)] mt-0.5">
-                        {opLabel} · {tl.list_date || '—'}
-                        {tl.rows_count != null ? ` · ${tl.rows_count} ${ru.inspector.wagonsShort}` : ''}
-                        {tl.route_display_name ? ` · ${tl.route_display_name}` : ''}
-                      </div>
-                    </div>
-                    <ChevronRight className="w-5 h-5 text-[var(--muted)] shrink-0" />
-                  </button>
+                <li key={tl.id} className="card p-2 flex items-stretch gap-1">
+                  {renamingId === tl.id ? (
+                    <form
+                      className="flex flex-1 flex-wrap items-center gap-2 p-1"
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        renameList(tl.id, renameValue);
+                      }}
+                    >
+                      <input
+                        className="field flex-1 min-w-[10rem]"
+                        value={renameValue}
+                        onChange={(e) => setRenameValue(e.target.value)}
+                        aria-label={ru.inspector.renamePrompt}
+                        autoFocus
+                      />
+                      <button type="submit" className="btn btn-primary" disabled={listActionBusy}>
+                        {ru.actions.save}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-secondary"
+                        disabled={listActionBusy}
+                        onClick={() => {
+                          setRenamingId(null);
+                          setRenameValue('');
+                        }}
+                      >
+                        {ru.actions.cancel}
+                      </button>
+                    </form>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        className="flex-1 rounded-lg p-3 flex items-center justify-between gap-3 text-left min-h-[var(--tap)] row-interactive"
+                        onClick={() => setSelectedListId(tl.id)}
+                      >
+                        <div>
+                          <div className="font-semibold">{label}</div>
+                          <div className="text-sm text-[var(--muted)] mt-0.5">
+                            {opLabel} · {tl.list_date || '—'}
+                            {tl.rows_count != null ? ` · ${tl.rows_count} ${ru.inspector.wagonsShort}` : ''}
+                            {tl.route_display_name ? ` · ${tl.route_display_name}` : ''}
+                          </div>
+                        </div>
+                        <ChevronRight className="w-5 h-5 text-[var(--muted)] shrink-0" />
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-ghost tap shrink-0"
+                        aria-label={ru.actions.edit}
+                        disabled={listActionBusy}
+                        onClick={() => startRename(tl)}
+                      >
+                        <Pencil className="w-4 h-4" />
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-ghost tap shrink-0"
+                        aria-label={ru.actions.delete}
+                        disabled={listActionBusy}
+                        onClick={() => deleteList(tl)}
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </>
+                  )}
                 </li>
               );
             })}
