@@ -161,6 +161,54 @@ a:focus-visible {
   flex-wrap: wrap;
   gap: 0.4rem 0.5rem;
 }
+
+/* Tall dialogs: keep header/footer in the viewport; only the body scrolls. */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: rgba(0, 0, 0, 0.35);
+  padding:
+    max(0.75rem, env(safe-area-inset-top, 0px))
+    0.75rem
+    max(0.75rem, env(safe-area-inset-bottom, 0px));
+}
+
+@media (min-width: 640px) {
+  .modal-overlay {
+    align-items: center;
+    padding: 1.5rem;
+  }
+}
+
+.modal-sheet {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-height: 0;
+  max-height: calc(100vh - 1.5rem);
+  max-height: calc(100dvh - 1.5rem - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+  overflow: hidden;
+}
+
+.modal-sheet-header,
+.modal-sheet-footer {
+  flex-shrink: 0;
+}
+
+.modal-sheet-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
 .chip-row > .btn {
   flex: 0 0 auto;
   max-width: 100%;

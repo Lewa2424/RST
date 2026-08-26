@@ -212,10 +212,10 @@ export const CreateRouteModal: React.FC<Props> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/35 flex items-end sm:items-center justify-center p-3 overflow-y-auto" role="dialog" aria-modal="true">
-      <div className="card w-full max-w-4xl my-4 relative overflow-hidden">
+    <div className="modal-overlay" role="dialog" aria-modal="true">
+      <div className="card modal-sheet max-w-4xl relative">
         {(isParsing || isSubmitting) && <LoadingOverlay label={waitLabel} />}
-        <div className="flex items-center justify-between p-4 border-b border-[var(--line)]">
+        <div className="modal-sheet-header flex items-center justify-between p-4 border-b border-[var(--line)]">
           <div>
             <h3 className="text-lg">{isAppend ? ru.createRoute.addTitle : ru.createRoute.title}</h3>
             <p className="text-sm text-[var(--muted)]">{step === 1 ? ru.createRoute.step1 : ru.createRoute.step2}</p>
@@ -223,7 +223,7 @@ export const CreateRouteModal: React.FC<Props> = ({
           <button type="button" className="btn btn-ghost tap" aria-label={ru.actions.close} onClick={onClose}><X className="w-5 h-5" /></button>
         </div>
 
-        <div className="p-4 space-y-4 max-h-[75vh] overflow-y-auto">
+        <div className="modal-sheet-body p-4 space-y-4">
           {step === 1 ? (
             <>
               {!isAppend && (
@@ -384,7 +384,7 @@ export const CreateRouteModal: React.FC<Props> = ({
           {parseError && <div className="badge badge-err w-full justify-start p-3">{parseError}</div>}
         </div>
 
-        <div className="p-4 flex justify-between border-t border-[var(--line)]">
+        <div className="modal-sheet-footer p-4 flex justify-between border-t border-[var(--line)]">
           <button type="button" className="btn btn-secondary" onClick={onClose}>{ru.actions.cancel}</button>
           {step === 2 && (
             <button type="button" className="btn btn-primary" disabled={isSubmitting} onClick={handleFinalSave}>
