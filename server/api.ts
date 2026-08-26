@@ -7,7 +7,7 @@ import { AppError, handleRouteError, sendError } from './errors.js';
 import { validateWagonChecksum, normalizeWagonNumber, isStoredWagonNumber } from './wagonUtils.js';
 import { parseExcelBuffer, parseTextContent, parseWordBuffer, type ParsePayload } from './parsers.js';
 import { parseImages } from './ocr.js';
-import { reconcileRoute } from './routeEngine.js';
+import { reconcileRoute, syncRouteProgressIfStale } from './routeEngine.js';
 import { backupDatabase } from './backup.js';
 import {
   addWagonsToRoute,
@@ -394,11 +394,19 @@ export async function createApiApp(): Promise<express.Express> {
   app.get('/api/routes', async (req, res) => {
     const { page, limit, offset } = pagination(req.query);
     const filters = buildRouteFilters(req, false);
+    const listSql = `${routeSelect} ${filters.sql} ORDER BY r.created_at DESC LIMIT ? OFFSET ?`;
+    const listParams = [...filters.params, limit, offset];
+    let items = await query(listSql, listParams);
+    let healed = false;
+    await transaction(async () => {
+      for (const item of items) {
+        if (await syncRouteProgressIfStale(Number(item.id))) healed = true;
+      }
+    });
+    if (healed) {
+      items = await query(listSql, listParams);
+    }
     const total = (await queryOne<{ count: number }>(`SELECT COUNT(*) as count FROM routes r ${filters.sql}`, filters.params))?.count || 0;
-    const items = await query(
-      `${routeSelect} ${filters.sql} ORDER BY r.created_at DESC LIMIT ? OFFSET ?`,
-      [...filters.params, limit, offset],
-    );
     res.json(paged(items, total, page, limit));
   });
 
@@ -415,6 +423,9 @@ export async function createApiApp(): Promise<express.Express> {
 
   app.get('/api/routes/:id', async (req, res) => {
     const { id } = req.params;
+    await transaction(async () => {
+      await syncRouteProgressIfStale(Number(id));
+    });
     const route = await queryOne<Record<string, unknown>>(`${routeSelect} WHERE r.id = ?`, [id]);
     if (!route) {
       sendError(res, 404, 'NOT_FOUND', 'Маршрут не найден');

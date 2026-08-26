@@ -1,6 +1,6 @@
 import http from 'node:http';
 import { afterEach, describe, expect, it } from 'vitest';
-import { closeDatabase, openDatabase, query, transaction } from '../server/db';
+import { closeDatabase, openDatabase, query, run, transaction } from '../server/db';
 import {
   addWagonsToRoute,
   archiveRoute,
@@ -333,6 +333,100 @@ describe('HTTP API', () => {
       });
     }
   });
+
+  it('counts inspector-loaded wagons as processed without a bound list', async () => {
+    await setup();
+    const w1 = makeValidWagonNumber('6113607');
+    const w2 = makeValidWagonNumber('5321045');
+    const route = await transaction(async () =>
+      createRouteRecord({
+        display_name: 'Без списка',
+        product_type_id: 1,
+        wagons: [{ parsed_wagon_number: w1 }, { parsed_wagon_number: w2 }],
+      }),
+    );
+    const routeId = Number(route.id);
+    const wagons = await query<{ wagon_id: number }>(
+      'SELECT wagon_id FROM route_wagons WHERE route_id = ? ORDER BY id',
+      [routeId],
+    );
+
+    const app = await createApiApp();
+    const server = await new Promise<http.Server>((resolve) => {
+      const s = app.listen(0, '127.0.0.1', () => resolve(s));
+    });
+    try {
+      const addr = server.address();
+      const port = typeof addr === 'object' && addr ? addr.port : 0;
+      const base = `http://127.0.0.1:${port}`;
+
+      await fetch(`${base}/api/routes/${routeId}/wagons/${wagons[0].wagon_id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ terminal_status: 'LOADED' }),
+      });
+      const afterOne = (
+        await query<{ processed_count: number; status: string }>('SELECT processed_count, status FROM routes WHERE id = ?', [
+          routeId,
+        ])
+      )[0];
+      expect(afterOne.processed_count).toBe(1);
+      expect(afterOne.status).toBe('PARTIAL');
+
+      await fetch(`${base}/api/routes/${routeId}/wagons/${wagons[1].wagon_id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ terminal_status: 'LOADED' }),
+      });
+      const afterAll = (
+        await query<{ processed_count: number; status: string }>('SELECT processed_count, status FROM routes WHERE id = ?', [
+          routeId,
+        ])
+      )[0];
+      expect(afterAll.processed_count).toBe(2);
+      expect(afterAll.status).toBe('CLOSED');
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((err) => (err ? reject(err) : resolve()));
+      });
+    }
+  });
+
+  it('repairs stale processed_count when opening a route', async () => {
+    await setup();
+    const w1 = makeValidWagonNumber('6113607');
+    const route = await transaction(async () =>
+      createRouteRecord({
+        display_name: 'Устаревший счётчик',
+        product_type_id: 1,
+        wagons: [{ parsed_wagon_number: w1 }],
+      }),
+    );
+    const routeId = Number(route.id);
+    await run(
+      `UPDATE route_wagons SET terminal_status = 'LOADED', inspector_statuses = ?, processed_for_route = 0 WHERE route_id = ?`,
+      ['["AT_TERMINAL","UNLOADED","CLEANED","LOADED"]', routeId],
+    );
+    await run(`UPDATE routes SET processed_count = 0, status = 'ACTIVE' WHERE id = ?`, [routeId]);
+
+    const app = await createApiApp();
+    const server = await new Promise<http.Server>((resolve) => {
+      const s = app.listen(0, '127.0.0.1', () => resolve(s));
+    });
+    try {
+      const addr = server.address();
+      const port = typeof addr === 'object' && addr ? addr.port : 0;
+      const detail = await fetch(`http://127.0.0.1:${port}/api/routes/${routeId}`);
+      expect(detail.ok).toBe(true);
+      const body = (await detail.json()) as { processed_count: number; status: string };
+      expect(body.processed_count).toBe(1);
+      expect(body.status).toBe('CLOSED');
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((err) => (err ? reject(err) : resolve()));
+      });
+    }
+  });
 });
 
 describe('terminal list maintenance', () => {
@@ -372,8 +466,11 @@ describe('terminal list maintenance', () => {
     expect(remaining.length).toBe(0);
 
     const routeRow = (
-      await query<{ processed_count: number }>('SELECT processed_count FROM routes WHERE id = ?', [routeId])
+      await query<{ processed_count: number; status: string }>('SELECT processed_count, status FROM routes WHERE id = ?', [
+        routeId,
+      ])
     )[0];
-    expect(routeRow.processed_count).toBe(0);
+    expect(routeRow.processed_count).toBe(1);
+    expect(routeRow.status).toBe('CLOSED');
   });
 });

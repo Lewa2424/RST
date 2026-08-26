@@ -14,7 +14,6 @@ import {
   applyInspectorStatus,
   currentStatusFromPath,
   inspectorStatusFromTerminal,
-  parseInspectorStatuses,
   resolveInspectorPath,
   serializeInspectorStatuses,
 } from './inspectorStatus.js';
@@ -53,8 +52,22 @@ interface TerminalRow {
   terminal_list_id: number;
 }
 
+function digits(value: string | null | undefined): string {
+  return String(value || '').replace(/\D/g, '');
+}
+
 function placeholders(count: number): string {
   return Array.from({ length: count }, () => '?').join(',');
+}
+
+function latestFromWagon(rw: RouteWagonRow): { path: ReturnType<typeof resolveInspectorPath>; status: string } {
+  const path = resolveInspectorPath(rw.inspector_statuses, rw.terminal_status);
+  const fromPath = currentStatusFromPath(path);
+  const status = maxTerminalStatus(
+    rw.terminal_status || 'NOT_AT_TERMINAL',
+    fromPath === 'NOT_AT_TERMINAL' ? rw.terminal_status || 'NOT_AT_TERMINAL' : fromPath,
+  );
+  return { path, status };
 }
 
 async function insertDiscrepancy(params: {
@@ -145,10 +158,11 @@ export async function reconcileRoute(routeId: number): Promise<ReconcileResult> 
 
   const termMap = new Map<string, TerminalRow[]>();
   for (const row of terminalRows) {
-    if (!row.parsed_wagon_number) continue;
-    const list = termMap.get(row.parsed_wagon_number) ?? [];
+    const key = digits(row.parsed_wagon_number);
+    if (!key) continue;
+    const list = termMap.get(key) ?? [];
     list.push(row);
-    termMap.set(row.parsed_wagon_number, list);
+    termMap.set(key, list);
   }
 
   const seenInRoute = new Map<string, number>();
@@ -201,29 +215,26 @@ export async function reconcileRoute(routeId: number): Promise<ReconcileResult> 
       });
     }
 
-    const tRows = termMap.get(rw.wagon_number) ?? [];
+    const tRows = termMap.get(digits(rw.wagon_number)) ?? [];
+    let { path, status: latestStatus } = latestFromWagon(rw);
+    let terminalWeight: number | null = null;
+
     if (tRows.length > 0) {
       let listStatus = 'AT_TERMINAL';
-      let terminalWeight: number | null = null;
-
       for (const tr of tRows) {
         if (tr.weight_kg) terminalWeight = tr.weight_kg;
         listStatus = maxTerminalStatus(listStatus, statusFromListOperation(tr.operation_type));
       }
 
-      // Do not regress inspector/manual progress when re-running list reconcile.
-      let path = resolveInspectorPath(rw.inspector_statuses, rw.terminal_status);
       const inspectorFromList = inspectorStatusFromTerminal(listStatus);
       if (inspectorFromList) {
         path = applyInspectorStatus(path, inspectorFromList);
       }
       const fromPath = currentStatusFromPath(path);
-      const latestStatus = maxTerminalStatus(
+      latestStatus = maxTerminalStatus(
         maxTerminalStatus(rw.terminal_status, listStatus),
         fromPath === 'NOT_AT_TERMINAL' ? listStatus : fromPath,
       );
-      const isProcessed = isOnTerminal(latestStatus) ? 1 : 0;
-      if (isProcessed) processedCount += 1;
 
       if (
         weightThreshold !== null &&
@@ -244,11 +255,6 @@ export async function reconcileRoute(routeId: number): Promise<ReconcileResult> 
           now,
         });
       }
-
-      await run(
-        `UPDATE route_wagons SET terminal_status = ?, processed_for_route = ?, inspector_statuses = ?, updated_at = ? WHERE id = ?`,
-        [latestStatus, isProcessed, serializeInspectorStatuses(path), now, rw.id],
-      );
     } else if (confirmedLists.length > 0) {
       await insertDiscrepancy({
         routeId,
@@ -257,21 +263,25 @@ export async function reconcileRoute(routeId: number): Promise<ReconcileResult> 
         details: { wagon_number: rw.wagon_number },
         now,
       });
-      const inspectorPath = parseInspectorStatuses(rw.inspector_statuses);
-      if (inspectorPath.length === 0) {
-        await run(
-          `UPDATE route_wagons SET terminal_status = 'NOT_AT_TERMINAL', processed_for_route = 0, inspector_statuses = '[]', updated_at = ? WHERE id = ?`,
-          [now, rw.id],
-        );
-      } else if (isOnTerminal(rw.terminal_status)) {
-        processedCount += 1;
+      if (!isOnTerminal(latestStatus)) {
+        latestStatus = 'NOT_AT_TERMINAL';
+        path = [];
       }
     }
+
+    const isProcessed = isOnTerminal(latestStatus) ? 1 : 0;
+    if (isProcessed) processedCount += 1;
+
+    await run(
+      `UPDATE route_wagons SET terminal_status = ?, processed_for_route = ?, inspector_statuses = ?, updated_at = ? WHERE id = ?`,
+      [latestStatus, isProcessed, serializeInspectorStatuses(path), now, rw.id],
+    );
   }
 
-  const declaredNumbers = new Set(routeWagons.map((rw) => rw.wagon_number));
+  const declaredNumbers = new Set(routeWagons.map((rw) => digits(rw.wagon_number)));
   for (const tr of terminalRows) {
-    if (tr.parsed_wagon_number && !declaredNumbers.has(tr.parsed_wagon_number)) {
+    const extraDigits = digits(tr.parsed_wagon_number);
+    if (extraDigits && !declaredNumbers.has(extraDigits)) {
       await insertDiscrepancy({
         routeId,
         terminalListId: tr.terminal_list_id,
@@ -327,4 +337,22 @@ export async function reconcileRoute(routeId: number): Promise<ReconcileResult> 
       wagonCount > 0 && processedCount >= wagonCount && blockingCount === 0 && materialCount === 0
     ),
   };
+}
+
+/** Recompute counters when wagon statuses and route.processed_count disagree. */
+export async function syncRouteProgressIfStale(routeId: number): Promise<boolean> {
+  const route = await queryOne<{ status: string; processed_count: number }>(
+    'SELECT status, processed_count FROM routes WHERE id = ?',
+    [routeId],
+  );
+  if (!route || route.status === 'ARCHIVED') return false;
+  const live =
+    (await queryOne<{ count: number }>(
+      `SELECT COUNT(*) as count FROM route_wagons
+       WHERE route_id = ? AND terminal_status != 'NOT_AT_TERMINAL'`,
+      [routeId],
+    ))?.count ?? 0;
+  if (live === route.processed_count) return false;
+  await reconcileRoute(routeId);
+  return true;
 }

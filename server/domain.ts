@@ -4,6 +4,7 @@ import { validateWagonChecksum, normalizeWagonNumber, isStoredWagonNumber } from
 import { reconcileRoute } from './routeEngine.js';
 import { PARSER_VERSION } from './config.js';
 import type { ParsePayload, ParsedWagonRow } from './parsers.js';
+import { isOnTerminal } from './routeStatus.js';
 import {
   applyInspectorStatus,
   currentStatusFromPath,
@@ -300,11 +301,13 @@ export async function updateRouteWagonRecord(
   const weight = input.declared_weight_kg !== undefined ? input.declared_weight_kg : row.declared_weight_kg;
   const notes = input.notes !== undefined ? input.notes : row.notes;
 
+  const processed = isOnTerminal(terminalStatus) ? 1 : 0;
+
   await run(
     `UPDATE route_wagons
-     SET wagon_id = ?, declared_weight_kg = ?, terminal_status = ?, notes = ?, inspector_statuses = ?, updated_at = ?
+     SET wagon_id = ?, declared_weight_kg = ?, terminal_status = ?, notes = ?, inspector_statuses = ?, processed_for_route = ?, updated_at = ?
      WHERE id = ?`,
-    [targetWagonId, weight ?? null, terminalStatus, notes ?? null, serializeInspectorStatuses(path), now, row.id],
+    [targetWagonId, weight ?? null, terminalStatus, notes ?? null, serializeInspectorStatuses(path), processed, now, row.id],
   );
 
   if (input.terminal_status) {
