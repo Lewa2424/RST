@@ -56,6 +56,16 @@ h1, h2, .display {
   padding: 0.15em 0.45em;
   box-shadow: inset 0 1px 0 rgba(255,255,255,0.7);
 }
+.wagon-no--ok {
+  color: var(--ok);
+  background: var(--ok-soft);
+  border-color: #b5d0c2;
+}
+.wagon-no--err {
+  color: var(--err);
+  background: var(--err-soft);
+  border-color: #d9b0a8;
+}
 
 .card {
   background: var(--panel);
@@ -159,11 +169,20 @@ a:focus-visible {
 .chip-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.4rem 0.5rem;
+  gap: 0.3rem 0.35rem;
 }
-.chip-row > .btn {
+.chip-row > .btn,
+.btn-chip {
   flex: 0 0 auto;
   max-width: 100%;
+  min-height: 28px;
+  min-width: auto;
+  padding: 0.12rem 0.45rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1.2;
+  border-radius: 6px;
+  gap: 0.2rem;
 }
 
 .row-interactive {

@@ -20,7 +20,7 @@ export const InspectorStatusButtons: React.FC<ButtonsProps> = ({
   <div className="chip-row">
     {INSPECTOR_STATUSES.map((status) => {
       const on = pathHasStatus(path, status);
-      const className = `btn tap ${on ? 'btn-status-on' : 'btn-secondary'}`;
+      const className = `btn btn-chip ${on ? 'btn-status-on' : 'btn-secondary'}`;
       if (readOnly) {
         return (
           <span

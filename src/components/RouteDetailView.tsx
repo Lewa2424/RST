@@ -2,10 +2,27 @@ import React, { useState } from 'react';
 import { Route, RouteWagon, Discrepancy, TerminalList } from '../types';
 import { ArrowLeft, Plus, Pencil, Archive, RefreshCw } from 'lucide-react';
 import { ru } from '../i18n/ru';
-import { ChecksumBadge, RouteStatusBadge, WagonStatusBadge } from './StatusBadge';
-import { formatWagonNumber } from '../../server/wagonUtils';
+import { RouteStatusBadge, WagonStatusBadge } from './StatusBadge';
+import { formatWagonNumber, suggestCorrectedWagonNumber } from '../../server/wagonUtils';
 import { resolveInspectorPath } from '../../server/inspectorStatus';
 import { InspectorStatusButtons } from './InspectorStatusPath';
+
+function WagonNumberCell({ number, checksumOk }: { number: string; checksumOk: boolean }) {
+  const suggested = !checksumOk ? suggestCorrectedWagonNumber(number) : null;
+  const title = checksumOk
+    ? ru.checksum.ok
+    : suggested
+      ? `${ru.checksum.error}. ${ru.checksum.suggested}: ${formatWagonNumber(suggested)}`
+      : ru.checksum.error;
+  return (
+    <span
+      className={`wagon-no ${checksumOk ? 'wagon-no--ok' : 'wagon-no--err'}`}
+      title={title}
+    >
+      {formatWagonNumber(number)}
+    </span>
+  );
+}
 
 const TIP_DISCREPANCY_TYPES = new Set([
   'EXTRA_IN_TERMINAL_LIST',
@@ -178,10 +195,9 @@ export const RouteDetailView: React.FC<Props> = ({
           {filteredWagons.map((w) => (
             <article key={w.id} className="card-interactive border border-[var(--line)] rounded-xl p-3 space-y-2">
               <div className="flex justify-between gap-2">
-                <span className="wagon-no">{formatWagonNumber(w.wagon_number)}</span>
+                <WagonNumberCell number={w.wagon_number} checksumOk={Boolean(w.is_checksum_valid)} />
                 <button type="button" className="btn btn-ghost tap" aria-label={ru.actions.edit} onClick={() => onEditWagonRow(w)}><Pencil className="w-4 h-4" /></button>
               </div>
-              <ChecksumBadge ok={Boolean(w.is_checksum_valid)} wagonNumber={w.wagon_number} />
               <WagonStatusBadge status={w.terminal_status} />
               <InspectorStatusButtons path={wagonPath(w)} readOnly />
               <p className="text-sm">{ru.route.declared}: {w.declared_weight_kg ? `${w.declared_weight_kg.toLocaleString('ru-RU')} кг` : '—'} · {ru.route.terminal}: {w.terminal_weight_kg ? `${w.terminal_weight_kg.toLocaleString('ru-RU')} кг` : '—'}</p>
@@ -196,7 +212,6 @@ export const RouteDetailView: React.FC<Props> = ({
               <tr className="text-[var(--muted)] border-b border-[var(--line)]">
                 <th className="py-2">№</th>
                 <th>Вагон</th>
-                <th>КС</th>
                 <th>{ru.route.declared}</th>
                 <th>{ru.route.terminal}</th>
                 <th>Статус</th>
@@ -208,8 +223,9 @@ export const RouteDetailView: React.FC<Props> = ({
               {filteredWagons.map((w) => (
                 <tr key={w.id} className="border-b border-[var(--line)] row-interactive">
                   <td className="py-2">{w.sequence_no}</td>
-                  <td><span className="wagon-no">{formatWagonNumber(w.wagon_number)}</span></td>
-                  <td><ChecksumBadge ok={Boolean(w.is_checksum_valid)} wagonNumber={w.wagon_number} /></td>
+                  <td>
+                    <WagonNumberCell number={w.wagon_number} checksumOk={Boolean(w.is_checksum_valid)} />
+                  </td>
                   <td>{w.declared_weight_kg ? `${w.declared_weight_kg.toLocaleString('ru-RU')} кг` : '—'}</td>
                   <td>{w.terminal_weight_kg ? `${w.terminal_weight_kg.toLocaleString('ru-RU')} кг` : '—'}</td>
                   <td>
