@@ -4,6 +4,8 @@ import { ArrowLeft, Plus, Pencil, Archive, RefreshCw } from 'lucide-react';
 import { ru } from '../i18n/ru';
 import { ChecksumBadge, RouteStatusBadge, WagonStatusBadge } from './StatusBadge';
 import { formatWagonNumber } from '../../server/wagonUtils';
+import { resolveInspectorPath } from '../../server/inspectorStatus';
+import { InspectorStatusButtons } from './InspectorStatusPath';
 
 const TIP_DISCREPANCY_TYPES = new Set([
   'EXTRA_IN_TERMINAL_LIST',
@@ -59,14 +61,19 @@ export const RouteDetailView: React.FC<Props> = ({
   const remaining = Math.max(0, route.wagon_count - route.processed_count);
   const listsCount = (route.terminal_lists || []).length;
 
+  const wagonPath = (w: RouteWagon) => resolveInspectorPath(w.inspector_statuses, w.terminal_status);
+
   const filteredWagons = (route.wagons || []).filter((w) => {
     if (filterTab === 'ALL') return true;
     if (filterTab === 'PENDING') return w.processed_for_route === 0;
-    if (filterTab === 'AT_TERMINAL') return w.terminal_status === 'AT_TERMINAL';
-    if (filterTab === 'UNLOADED') return w.terminal_status === 'UNLOADED';
-    if (filterTab === 'CLEANED') return w.terminal_status === 'CLEANED';
-    if (filterTab === 'LOADED') return w.terminal_status === 'LOADED';
-    if (filterTab === 'DEPARTED') return w.terminal_status.startsWith('DEPARTED');
+    const path = wagonPath(w);
+    if (filterTab === 'AT_TERMINAL') return path.includes('AT_TERMINAL') || w.terminal_status === 'AT_TERMINAL';
+    if (filterTab === 'UNLOADED') return path.includes('UNLOADED') || w.terminal_status === 'UNLOADED';
+    if (filterTab === 'CLEANED') return path.includes('CLEANED') || w.terminal_status === 'CLEANED';
+    if (filterTab === 'LOADED') return path.includes('LOADED') || w.terminal_status === 'LOADED';
+    if (filterTab === 'DEPARTED') {
+      return path.includes('DEPARTED_EMPTY') || w.terminal_status.startsWith('DEPARTED');
+    }
     if (filterTab === 'DISCREPANCIES') {
       const wagonDisc = (w.discrepancies || []).filter((d) => !TIP_DISCREPANCY_TYPES.has(d.type));
       return wagonDisc.length > 0 || !w.is_checksum_valid;
@@ -169,6 +176,7 @@ export const RouteDetailView: React.FC<Props> = ({
               </div>
               <ChecksumBadge ok={Boolean(w.is_checksum_valid)} wagonNumber={w.wagon_number} />
               <WagonStatusBadge status={w.terminal_status} />
+              <InspectorStatusButtons path={wagonPath(w)} readOnly />
               <p className="text-sm">{ru.route.declared}: {w.declared_weight_kg ? `${w.declared_weight_kg.toLocaleString('ru-RU')} кг` : '—'} · {ru.route.terminal}: {w.terminal_weight_kg ? `${w.terminal_weight_kg.toLocaleString('ru-RU')} кг` : '—'}</p>
               <div className="text-sm">{wagonMatchLabel(w)}</div>
             </article>
@@ -197,7 +205,12 @@ export const RouteDetailView: React.FC<Props> = ({
                   <td><ChecksumBadge ok={Boolean(w.is_checksum_valid)} wagonNumber={w.wagon_number} /></td>
                   <td>{w.declared_weight_kg ? `${w.declared_weight_kg.toLocaleString('ru-RU')} кг` : '—'}</td>
                   <td>{w.terminal_weight_kg ? `${w.terminal_weight_kg.toLocaleString('ru-RU')} кг` : '—'}</td>
-                  <td><WagonStatusBadge status={w.terminal_status} /></td>
+                  <td>
+                    <div className="space-y-2 py-2">
+                      <WagonStatusBadge status={w.terminal_status} />
+                      <InspectorStatusButtons path={wagonPath(w)} readOnly />
+                    </div>
+                  </td>
                   <td>{wagonMatchLabel(w)}</td>
                   <td><button type="button" className="btn btn-ghost tap" aria-label={ru.actions.edit} onClick={() => onEditWagonRow(w)}><Pencil className="w-4 h-4" /></button></td>
                 </tr>

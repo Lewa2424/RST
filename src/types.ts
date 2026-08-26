@@ -1,3 +1,7 @@
+import type { InspectorStatus } from '../server/inspectorStatus';
+
+export type { InspectorStatus };
+
 export type TerminalStatus = 
   | 'NOT_AT_TERMINAL'
   | 'AT_TERMINAL'
@@ -109,6 +113,7 @@ export interface RouteWagon {
   declared_weight_kg?: number | null;
   terminal_weight_kg?: number | null;
   terminal_status: TerminalStatus;
+  inspector_statuses?: InspectorStatus[];
   processed_for_route: number;
   notes?: string | null;
   created_at: string;
@@ -158,6 +163,7 @@ export interface TerminalListWorkboardRow extends TerminalListRow {
   route_name?: string | null;
   route_wagon_id?: number | null;
   terminal_status?: string | null;
+  inspector_statuses?: InspectorStatus[];
 }
 
 export interface Discrepancy {
@@ -227,6 +233,7 @@ export interface SearchWagonResult {
     product_grade_name?: string;
     station_name?: string;
     terminal_status: TerminalStatus;
+    inspector_statuses?: InspectorStatus[];
     declared_weight_kg?: number;
     notes?: string;
   }>;

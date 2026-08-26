@@ -12,6 +12,7 @@ import { backupDatabase } from './backup.js';
 import {
   addWagonsToRoute,
   archiveRoute,
+  applyInspectorStatusBatch,
   cancelImportSession,
   confirmDraftTerminalList,
   confirmImportSession,
@@ -19,14 +20,15 @@ import {
   createRouteRecord,
   createTerminalListRecord,
   deleteTerminalListRecord,
-  getOrCreateWagon,
   getTerminalListDetail,
   matchRouteCandidates,
+  updateRouteWagonRecord,
   updateTerminalListRecord,
   unarchiveRoute,
   pagination,
   parseStatusFilter,
   updateImportSessionRows,
+  withInspectorPath,
   type IncomingWagon,
 } from './domain.js';
 
@@ -445,11 +447,13 @@ export async function createApiApp(): Promise<express.Express> {
       list.push(d);
       discMap.set(wagonId, list);
     }
-    const enrichedWagons = wagons.map((w) => ({
-      ...w,
-      terminal_weight_kg: weightMap.get(String(w.wagon_number)) ?? null,
-      discrepancies: discMap.get(Number(w.wagon_id)) || [],
-    }));
+    const enrichedWagons = wagons.map((w) =>
+      withInspectorPath({
+        ...w,
+        terminal_weight_kg: weightMap.get(String(w.wagon_number)) ?? null,
+        discrepancies: discMap.get(Number(w.wagon_id)) || [],
+      }),
+    );
     const terminalLists = await query(
       `SELECT tl.*, pt.name as product_type_name,
               (SELECT COUNT(*) FROM terminal_list_rows tlr WHERE tlr.terminal_list_id = tl.id) as rows_count
@@ -567,54 +571,25 @@ export async function createApiApp(): Promise<express.Express> {
     '/api/routes/:id/wagons/:wagonId',
     asyncHandler(async (req, res) => {
       const { id, wagonId } = req.params;
-      const now = nowIso();
-      await transaction(async () => {
-        const row = await queryOne<{ id: number; wagon_id: number }>(
-          'SELECT id, wagon_id FROM route_wagons WHERE route_id = ? AND (id = ? OR wagon_id = ?)',
-          [id, wagonId, wagonId],
-        );
-        if (!row) throw new AppError(404, 'NOT_FOUND', 'Вагон маршрута не найден');
+      const result = await transaction(async () =>
+        await updateRouteWagonRecord(Number(id), Number(wagonId), {
+          wagon_number: req.body.wagon_number,
+          declared_weight_kg: req.body.declared_weight_kg,
+          terminal_status: req.body.terminal_status,
+          notes: req.body.notes,
+        }),
+      );
+      res.json({ success: true, ...result });
+    }),
+  );
 
-        let targetWagonId = row.wagon_id;
-        if (req.body.wagon_number) {
-          const check = validateWagonChecksum(req.body.wagon_number);
-          if (!isStoredWagonNumber(check.normalized)) {
-            throw new AppError(400, 'VALIDATION_ERROR', check.errorReason || 'Неверный номер вагона');
-          }
-          const saved = await getOrCreateWagon(req.body.wagon_number, now);
-          if (!saved) throw new AppError(400, 'VALIDATION_ERROR', 'Не удалось сохранить номер вагона');
-          const newWagon = { id: saved.id };
-          const dup = await queryOne(
-            'SELECT id FROM route_wagons WHERE route_id = ? AND wagon_id = ? AND id != ?',
-            [id, newWagon.id, row.id],
-          );
-          if (dup) throw new AppError(409, 'CONFLICT', 'Такой вагон уже есть в маршруте');
-          targetWagonId = newWagon.id;
-        }
-
-        await run(
-          `UPDATE route_wagons
-           SET wagon_id = ?, declared_weight_kg = ?, terminal_status = COALESCE(?, terminal_status), notes = ?, updated_at = ?
-           WHERE id = ?`,
-          [
-            targetWagonId,
-            req.body.declared_weight_kg ?? null,
-            req.body.terminal_status || null,
-            req.body.notes || null,
-            now,
-            row.id,
-          ],
-        );
-        if (req.body.terminal_status) {
-          await run(
-            `INSERT INTO wagon_events (wagon_id, route_id, event_type, event_at, created_at)
-             VALUES (?, ?, 'MANUAL_CORRECTION', ?, ?)`,
-            [targetWagonId, id, now, now],
-          );
-        }
-        await reconcileRoute(Number(id));
-      });
-      res.json({ success: true });
+  app.post(
+    '/api/inspector/wagon-status',
+    asyncHandler(async (req, res) => {
+      const status = String(req.body?.status || '');
+      const items = Array.isArray(req.body?.items) ? req.body.items : [];
+      const result = await transaction(async () => await applyInspectorStatusBatch(status, items));
+      res.json({ success: true, ...result });
     }),
   );
 
@@ -869,7 +844,7 @@ export async function createApiApp(): Promise<express.Express> {
         const wagonRoutes = await query(
           `SELECT r.id as route_id, r.internal_code, r.display_name, r.status as route_status,
                   pt.name as product_type_name, pg.name as product_grade_name, s.name as station_name,
-                  rw.terminal_status, rw.declared_weight_kg, rw.notes
+                  rw.terminal_status, rw.inspector_statuses, rw.declared_weight_kg, rw.notes
            FROM route_wagons rw
            JOIN routes r ON r.id = rw.route_id
            JOIN product_types pt ON pt.id = r.product_type_id
@@ -888,7 +863,7 @@ export async function createApiApp(): Promise<express.Express> {
         wagonResult = {
           wagon_number: wagonObj.wagon_number,
           is_checksum_valid: wagonObj.is_checksum_valid,
-          routes: wagonRoutes,
+          routes: wagonRoutes.map((r) => withInspectorPath(r)),
           events: wagonEvents,
         };
       }

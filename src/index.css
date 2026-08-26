@@ -135,6 +135,23 @@ a:focus-visible {
   border-color: #e3c4bf;
 }
 
+.btn-status-on {
+  background: var(--ok);
+  color: #fff;
+  border-color: var(--ok);
+}
+.btn-status-on:disabled {
+  opacity: 1;
+  cursor: default;
+}
+
+.inspector-check {
+  width: 1.15rem;
+  height: 1.15rem;
+  accent-color: var(--ok);
+  flex-shrink: 0;
+}
+
 .btn:active:not(:disabled) {
   transform: translateY(1px) scale(0.98);
 }
@@ -161,6 +178,10 @@ a:focus-visible {
   }
   .btn-danger:hover:not(:disabled) {
     filter: brightness(0.97);
+    transform: translateY(-1px);
+  }
+  .btn-status-on:hover:not(:disabled) {
+    filter: brightness(1.06);
     transform: translateY(-1px);
   }
   .card-interactive:hover {

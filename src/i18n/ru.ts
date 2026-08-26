@@ -190,6 +190,11 @@ export const ru = {
     renameEmpty: 'Введите название списка',
     deleted: 'Список удалён',
     renamed: 'Название сохранено',
+    selectAll: 'Выбрать все',
+    selectedCount: 'Выбрано: {count}',
+    batchHint: 'Отметьте вагоны и нажмите статус — он применится ко всем выбранным.',
+    batchNeedSelection: 'Отметьте вагоны, чтобы применить статус ко всем.',
+    path: 'Путь на терминале',
     statuses: {
       AT_TERMINAL: 'Полный',
       UNLOADED: 'Выгружен',

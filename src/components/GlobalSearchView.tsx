@@ -4,6 +4,8 @@ import { ru } from '../i18n/ru';
 import { RouteStatusBadge, WagonStatusBadge, ChecksumBadge } from './StatusBadge';
 import { LoadingState, Spinner } from './LoadingState';
 import { formatWagonNumber } from '../../server/wagonUtils';
+import { resolveInspectorPath } from '../../server/inspectorStatus';
+import { InspectorStatusButtons } from './InspectorStatusPath';
 
 interface Props {
   searchQuery: string;
@@ -51,7 +53,10 @@ export const GlobalSearchView: React.FC<Props> = ({
                     <RouteStatusBadge status={r.route_status} />
                   </div>
                   <p className="text-sm text-[var(--muted)]">{r.product_type_name} {r.station_name || ''}</p>
-                  <WagonStatusBadge status={r.terminal_status} />
+                  <div className="mt-2 space-y-2">
+                    <WagonStatusBadge status={r.terminal_status} />
+                    <InspectorStatusButtons path={resolveInspectorPath(r.inspector_statuses, r.terminal_status)} readOnly />
+                  </div>
                 </button>
               ))}
             </div>

@@ -73,6 +73,7 @@ export const SQLITE_SCHEMA = `
       )),
       processed_for_route INTEGER NOT NULL DEFAULT 0 CHECK (processed_for_route IN (0,1)),
       notes TEXT NULL,
+      inspector_statuses TEXT NOT NULL DEFAULT '[]',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       UNIQUE(route_id, wagon_id)
@@ -239,6 +240,7 @@ export const POSTGRES_SCHEMA = `
       )),
       processed_for_route INTEGER NOT NULL DEFAULT 0 CHECK (processed_for_route IN (0,1)),
       notes TEXT NULL,
+      inspector_statuses TEXT NOT NULL DEFAULT '[]',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       UNIQUE(route_id, wagon_id)

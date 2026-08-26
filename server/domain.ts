@@ -4,6 +4,15 @@ import { validateWagonChecksum, normalizeWagonNumber, isStoredWagonNumber } from
 import { reconcileRoute } from './routeEngine.js';
 import { PARSER_VERSION } from './config.js';
 import type { ParsePayload, ParsedWagonRow } from './parsers.js';
+import {
+  applyInspectorStatus,
+  currentStatusFromPath,
+  inspectorStatusFromTerminal,
+  isInspectorStatus,
+  resolveInspectorPath,
+  serializeInspectorStatuses,
+  type InspectorStatus,
+} from './inspectorStatus.js';
 
 export interface IncomingWagon {
   raw_wagon_number?: string;
@@ -198,8 +207,157 @@ export async function unarchiveRoute(routeId: number): Promise<Record<string, un
   if (!route) throw new AppError(404, 'NOT_FOUND', 'Маршрут не найден');
   const now = nowIso();
   await run("UPDATE routes SET status = 'ACTIVE', archived_at = NULL, updated_at = ? WHERE id = ?", [now, routeId]);
-  const result = await reconcileRoute(routeId);
+  const result =   await reconcileRoute(routeId);
   return { success: true, status: result.status };
+}
+
+export function withInspectorPath<T extends Record<string, unknown>>(
+  row: T,
+): T & { inspector_statuses: InspectorStatus[] } {
+  return {
+    ...row,
+    inspector_statuses: resolveInspectorPath(row.inspector_statuses, String(row.terminal_status || '')),
+  };
+}
+
+export interface RouteWagonInspectorResult {
+  route_id: number;
+  wagon_id: number;
+  terminal_status: string;
+  inspector_statuses: InspectorStatus[];
+}
+
+export async function persistRouteWagonInspectorStatus(
+  routeId: number,
+  wagonKey: number,
+  status: string,
+  options: { reconcile?: boolean } = {},
+): Promise<RouteWagonInspectorResult> {
+  return updateRouteWagonRecord(routeId, wagonKey, { terminal_status: status }, options);
+}
+
+export async function updateRouteWagonRecord(
+  routeId: number,
+  wagonKey: number,
+  input: {
+    wagon_number?: string;
+    declared_weight_kg?: number | null;
+    terminal_status?: string;
+    notes?: string | null;
+  },
+  options: { reconcile?: boolean } = {},
+): Promise<RouteWagonInspectorResult> {
+  const now = nowIso();
+  const row = await queryOne<{
+    id: number;
+    wagon_id: number;
+    declared_weight_kg: number | null;
+    terminal_status: string;
+    inspector_statuses: string | null;
+    notes: string | null;
+  }>(
+    `SELECT id, wagon_id, declared_weight_kg, terminal_status, inspector_statuses, notes
+     FROM route_wagons WHERE route_id = ? AND (id = ? OR wagon_id = ?)`,
+    [routeId, wagonKey, wagonKey],
+  );
+  if (!row) throw new AppError(404, 'NOT_FOUND', 'Вагон маршрута не найден');
+
+  let targetWagonId = row.wagon_id;
+  if (input.wagon_number) {
+    const check = validateWagonChecksum(input.wagon_number);
+    if (!isStoredWagonNumber(check.normalized)) {
+      throw new AppError(400, 'VALIDATION_ERROR', check.errorReason || 'Неверный номер вагона');
+    }
+    const saved = await getOrCreateWagon(input.wagon_number, now);
+    if (!saved) throw new AppError(400, 'VALIDATION_ERROR', 'Не удалось сохранить номер вагона');
+    const dup = await queryOne(
+      'SELECT id FROM route_wagons WHERE route_id = ? AND wagon_id = ? AND id != ?',
+      [routeId, saved.id, row.id],
+    );
+    if (dup) throw new AppError(409, 'CONFLICT', 'Такой вагон уже есть в маршруте');
+    targetWagonId = saved.id;
+  }
+
+  let path = resolveInspectorPath(row.inspector_statuses, row.terminal_status);
+  let terminalStatus = row.terminal_status;
+
+  if (input.terminal_status) {
+    if (input.terminal_status === 'NOT_AT_TERMINAL') {
+      path = [];
+      terminalStatus = 'NOT_AT_TERMINAL';
+    } else {
+      const next = inspectorStatusFromTerminal(input.terminal_status);
+      if (next) {
+        path = applyInspectorStatus(path, next);
+        terminalStatus =
+          input.terminal_status === 'DEPARTED_LOADED' ? 'DEPARTED_LOADED' : currentStatusFromPath(path);
+      } else {
+        terminalStatus = input.terminal_status;
+      }
+    }
+  }
+
+  const weight = input.declared_weight_kg !== undefined ? input.declared_weight_kg : row.declared_weight_kg;
+  const notes = input.notes !== undefined ? input.notes : row.notes;
+
+  await run(
+    `UPDATE route_wagons
+     SET wagon_id = ?, declared_weight_kg = ?, terminal_status = ?, notes = ?, inspector_statuses = ?, updated_at = ?
+     WHERE id = ?`,
+    [targetWagonId, weight ?? null, terminalStatus, notes ?? null, serializeInspectorStatuses(path), now, row.id],
+  );
+
+  if (input.terminal_status) {
+    const eventType = isInspectorStatus(input.terminal_status)
+      ? input.terminal_status
+      : input.terminal_status === 'DEPARTED_LOADED'
+        ? 'LOADED'
+        : 'MANUAL_CORRECTION';
+    await run(
+      `INSERT INTO wagon_events (wagon_id, route_id, event_type, event_at, created_at)
+       VALUES (?, ?, ?, ?, ?)`,
+      [targetWagonId, routeId, eventType, now, now],
+    );
+  }
+
+  if (options.reconcile !== false) {
+    await reconcileRoute(routeId);
+  }
+
+  return {
+    route_id: routeId,
+    wagon_id: targetWagonId,
+    terminal_status: terminalStatus,
+    inspector_statuses: path,
+  };
+}
+
+export async function applyInspectorStatusBatch(
+  status: string,
+  items: Array<{ route_id: number; wagon_id: number }>,
+): Promise<{ applied: RouteWagonInspectorResult[]; count: number }> {
+  if (!isInspectorStatus(status)) {
+    throw new AppError(400, 'VALIDATION_ERROR', 'Неизвестный статус инспектора');
+  }
+  if (!items.length) {
+    throw new AppError(400, 'VALIDATION_ERROR', 'Не выбраны вагоны');
+  }
+
+  const applied: RouteWagonInspectorResult[] = [];
+  const routeIds = new Set<number>();
+  for (const item of items) {
+    const routeId = Number(item.route_id);
+    const wagonId = Number(item.wagon_id);
+    if (!routeId || !wagonId) {
+      throw new AppError(400, 'VALIDATION_ERROR', 'Нужны route_id и wagon_id');
+    }
+    applied.push(await persistRouteWagonInspectorStatus(routeId, wagonId, status, { reconcile: false }));
+    routeIds.add(routeId);
+  }
+  for (const routeId of routeIds) {
+    await reconcileRoute(routeId);
+  }
+  return { applied, count: applied.length };
 }
 
 export async function createTerminalListRecord(input: {
@@ -414,6 +572,7 @@ export async function getTerminalListDetail(listId: number): Promise<Record<stri
         route_name: null,
         route_wagon_id: null,
         terminal_status: null,
+        inspector_statuses: [],
       });
       continue;
     }
@@ -424,8 +583,10 @@ export async function getTerminalListDetail(listId: number): Promise<Record<stri
           route_name: string;
           route_wagon_id: number;
           terminal_status: string;
+          inspector_statuses: string | null;
         }>(
-          `SELECT r.id as route_id, r.display_name as route_name, rw.wagon_id as route_wagon_id, rw.terminal_status
+          `SELECT r.id as route_id, r.display_name as route_name, rw.wagon_id as route_wagon_id,
+                  rw.terminal_status, rw.inspector_statuses
            FROM route_wagons rw
            JOIN routes r ON r.id = rw.route_id
            WHERE rw.route_id = ? AND rw.wagon_id = ?`,
@@ -436,8 +597,10 @@ export async function getTerminalListDetail(listId: number): Promise<Record<stri
           route_name: string;
           route_wagon_id: number;
           terminal_status: string;
+          inspector_statuses: string | null;
         }>(
-          `SELECT r.id as route_id, r.display_name as route_name, rw.wagon_id as route_wagon_id, rw.terminal_status
+          `SELECT r.id as route_id, r.display_name as route_name, rw.wagon_id as route_wagon_id,
+                  rw.terminal_status, rw.inspector_statuses
            FROM route_wagons rw
            JOIN routes r ON r.id = rw.route_id
            WHERE rw.wagon_id = ? AND r.product_type_id = ?
@@ -453,6 +616,7 @@ export async function getTerminalListDetail(listId: number): Promise<Record<stri
       route_name: match?.route_name ?? null,
       route_wagon_id: match?.route_wagon_id ?? null,
       terminal_status: match?.terminal_status ?? null,
+      inspector_statuses: resolveInspectorPath(match?.inspector_statuses, match?.terminal_status),
     });
   }
 

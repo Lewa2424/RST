@@ -10,6 +10,14 @@ import {
   statusFromListOperation,
   type RouteStatus,
 } from './routeStatus.js';
+import {
+  applyInspectorStatus,
+  currentStatusFromPath,
+  inspectorStatusFromTerminal,
+  parseInspectorStatuses,
+  resolveInspectorPath,
+  serializeInspectorStatuses,
+} from './inspectorStatus.js';
 
 export interface ReconcileResult {
   route_id: number;
@@ -35,6 +43,7 @@ interface RouteWagonRow {
   is_checksum_valid: number;
   declared_weight_kg: number | null;
   terminal_status: string;
+  inspector_statuses?: string | null;
 }
 
 interface TerminalRow {
@@ -203,7 +212,16 @@ export async function reconcileRoute(routeId: number): Promise<ReconcileResult> 
       }
 
       // Do not regress inspector/manual progress when re-running list reconcile.
-      const latestStatus = maxTerminalStatus(rw.terminal_status, listStatus);
+      let path = resolveInspectorPath(rw.inspector_statuses, rw.terminal_status);
+      const inspectorFromList = inspectorStatusFromTerminal(listStatus);
+      if (inspectorFromList) {
+        path = applyInspectorStatus(path, inspectorFromList);
+      }
+      const fromPath = currentStatusFromPath(path);
+      const latestStatus = maxTerminalStatus(
+        maxTerminalStatus(rw.terminal_status, listStatus),
+        fromPath === 'NOT_AT_TERMINAL' ? listStatus : fromPath,
+      );
       const isProcessed = isOnTerminal(latestStatus) ? 1 : 0;
       if (isProcessed) processedCount += 1;
 
@@ -228,8 +246,8 @@ export async function reconcileRoute(routeId: number): Promise<ReconcileResult> 
       }
 
       await run(
-        `UPDATE route_wagons SET terminal_status = ?, processed_for_route = ?, updated_at = ? WHERE id = ?`,
-        [latestStatus, isProcessed, now, rw.id],
+        `UPDATE route_wagons SET terminal_status = ?, processed_for_route = ?, inspector_statuses = ?, updated_at = ? WHERE id = ?`,
+        [latestStatus, isProcessed, serializeInspectorStatuses(path), now, rw.id],
       );
     } else if (confirmedLists.length > 0) {
       await insertDiscrepancy({
@@ -239,10 +257,15 @@ export async function reconcileRoute(routeId: number): Promise<ReconcileResult> 
         details: { wagon_number: rw.wagon_number },
         now,
       });
-      await run(
-        `UPDATE route_wagons SET terminal_status = 'NOT_AT_TERMINAL', processed_for_route = 0, updated_at = ? WHERE id = ?`,
-        [now, rw.id],
-      );
+      const inspectorPath = parseInspectorStatuses(rw.inspector_statuses);
+      if (inspectorPath.length === 0) {
+        await run(
+          `UPDATE route_wagons SET terminal_status = 'NOT_AT_TERMINAL', processed_for_route = 0, inspector_statuses = '[]', updated_at = ? WHERE id = ?`,
+          [now, rw.id],
+        );
+      } else if (isOnTerminal(rw.terminal_status)) {
+        processedCount += 1;
+      }
     }
   }
 

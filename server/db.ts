@@ -282,6 +282,11 @@ export async function generateInternalCode(): Promise<string> {
 async function applySqliteSchema(db: SqliteDatabase): Promise<void> {
   db.exec(SQLITE_SCHEMA);
   try {
+    db.exec(`ALTER TABLE route_wagons ADD COLUMN inspector_statuses TEXT NOT NULL DEFAULT '[]'`);
+  } catch {
+    // Column already exists on current schema / existing files.
+  }
+  try {
     db.exec(`
       CREATE UNIQUE INDEX IF NOT EXISTS idx_tlr_list_parsed
       ON terminal_list_rows(terminal_list_id, parsed_wagon_number)
@@ -294,6 +299,9 @@ async function applySqliteSchema(db: SqliteDatabase): Promise<void> {
 
 async function applyPostgresSchema(pool: PgPool): Promise<void> {
   await pool.query(POSTGRES_SCHEMA);
+  await pool.query(
+    `ALTER TABLE route_wagons ADD COLUMN IF NOT EXISTS inspector_statuses TEXT NOT NULL DEFAULT '[]'`,
+  );
   await pool.query(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_tlr_list_parsed
     ON terminal_list_rows(terminal_list_id, parsed_wagon_number)

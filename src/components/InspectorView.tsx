@@ -1,20 +1,14 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { ProductType, Route, ParsedRowCandidate, TerminalStatus, TerminalList, TerminalListWorkboardRow } from '../types';
+import { ProductType, Route, ParsedRowCandidate, InspectorStatus, TerminalList, TerminalListWorkboardRow } from '../types';
 import { Plus, ChevronRight, Pencil, Trash2 } from 'lucide-react';
 import { ru } from '../i18n/ru';
 import { api, asItems, asParseRows, ApiError } from '../api';
 import { formatWagonNumber } from '../../server/wagonUtils';
+import { resolveInspectorPath } from '../../server/inspectorStatus';
 import { WagonStatusBadge } from './StatusBadge';
 import { LoadingOverlay, Spinner } from './LoadingState';
 import { TerminalListWorkboard } from './TerminalListWorkboard';
-
-const INSPECTOR_STATUSES: Array<{ value: TerminalStatus; label: string }> = [
-  { value: 'AT_TERMINAL', label: ru.inspector.statuses.AT_TERMINAL },
-  { value: 'UNLOADED', label: ru.inspector.statuses.UNLOADED },
-  { value: 'CLEANED', label: ru.inspector.statuses.CLEANED },
-  { value: 'LOADED', label: ru.inspector.statuses.LOADED },
-  { value: 'DEPARTED_EMPTY', label: ru.inspector.statuses.DEPARTED_EMPTY },
-];
+import { InspectorBatchBar, InspectorStatusButtons } from './InspectorStatusPath';
 
 interface MatchedWagon {
   key: string;
@@ -23,6 +17,7 @@ interface MatchedWagon {
   wagon_id: number;
   wagon_number: string;
   terminal_status: string;
+  inspector_statuses: InspectorStatus[];
 }
 
 interface ListDetail extends TerminalList {
@@ -61,6 +56,7 @@ export const InspectorView: React.FC<Props> = ({
   const [renamingId, setRenamingId] = useState<number | null>(null);
   const [renameValue, setRenameValue] = useState('');
   const [listActionBusy, setListActionBusy] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
 
   const renameList = async (listId: number, displayName: string) => {
     const name = displayName.trim();
@@ -195,7 +191,12 @@ export const InspectorView: React.FC<Props> = ({
         const detail = await api<{
           id: number;
           display_name: string;
-          wagons: Array<{ wagon_id: number; wagon_number: string; terminal_status: string }>;
+          wagons: Array<{
+            wagon_id: number;
+            wagon_number: string;
+            terminal_status: string;
+            inspector_statuses?: InspectorStatus[];
+          }>;
         }>(`/api/routes/${c.id}`);
         for (const w of detail.wagons || []) {
           const digits = String(w.wagon_number || '').replace(/\D/g, '');
@@ -207,6 +208,7 @@ export const InspectorView: React.FC<Props> = ({
             wagon_id: w.wagon_id,
             wagon_number: w.wagon_number,
             terminal_status: w.terminal_status,
+            inspector_statuses: resolveInspectorPath(w.inspector_statuses, w.terminal_status),
           });
         }
       }
@@ -216,7 +218,12 @@ export const InspectorView: React.FC<Props> = ({
           const detail = await api<{
             id: number;
             display_name: string;
-            wagons: Array<{ wagon_id: number; wagon_number: string; terminal_status: string }>;
+            wagons: Array<{
+              wagon_id: number;
+              wagon_number: string;
+              terminal_status: string;
+              inspector_statuses?: InspectorStatus[];
+            }>;
           }>(`/api/routes/${route.id}`);
           for (const w of detail.wagons || []) {
             const digits = String(w.wagon_number || '').replace(/\D/g, '');
@@ -228,12 +235,14 @@ export const InspectorView: React.FC<Props> = ({
               wagon_id: w.wagon_id,
               wagon_number: w.wagon_number,
               terminal_status: w.terminal_status,
+              inspector_statuses: resolveInspectorPath(w.inspector_statuses, w.terminal_status),
             });
           }
         }
       }
 
       setMatched(found);
+      setSelected(new Set());
       if (!found.length) setError(ru.inspector.empty);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : ru.errors.generic);
@@ -243,24 +252,72 @@ export const InspectorView: React.FC<Props> = ({
     }
   };
 
-  const setStatus = async (row: MatchedWagon, status: TerminalStatus) => {
+  const setStatus = async (row: MatchedWagon, status: InspectorStatus) => {
     setBusyKey(row.key);
     setIsSaving(true);
     setError(null);
     try {
-      await api(`/api/routes/${row.route_id}/wagons/${row.wagon_id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ terminal_status: status }),
-      });
+      const result = await api<{ terminal_status: string; inspector_statuses: InspectorStatus[] }>(
+        `/api/routes/${row.route_id}/wagons/${row.wagon_id}`,
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ terminal_status: status }),
+        },
+      );
       setMatched((prev) =>
-        prev.map((m) => (m.key === row.key ? { ...m, terminal_status: status } : m)),
+        prev.map((m) =>
+          m.key === row.key
+            ? {
+                ...m,
+                terminal_status: result.terminal_status,
+                inspector_statuses: result.inspector_statuses,
+              }
+            : m,
+        ),
       );
       onStatusChanged();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : ru.errors.generic);
     } finally {
       setBusyKey(null);
+      setIsSaving(false);
+    }
+  };
+
+  const applyBatch = async (status: InspectorStatus) => {
+    const items = matched
+      .filter((row) => selected.has(row.key))
+      .map((row) => ({ route_id: row.route_id, wagon_id: row.wagon_id }));
+    if (!items.length) return;
+    setIsSaving(true);
+    setError(null);
+    try {
+      const result = await api<{
+        applied: Array<{
+          route_id: number;
+          wagon_id: number;
+          terminal_status: string;
+          inspector_statuses: InspectorStatus[];
+        }>;
+      }>('/api/inspector/wagon-status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status, items }),
+      });
+      const byKey = new Map((result.applied || []).map((item) => [`${item.route_id}-${item.wagon_id}`, item]));
+      setMatched((prev) =>
+        prev.map((m) => {
+          const next = byKey.get(m.key);
+          return next
+            ? { ...m, terminal_status: next.terminal_status, inspector_statuses: next.inspector_statuses }
+            : m;
+        }),
+      );
+      onStatusChanged();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : ru.errors.generic);
+    } finally {
       setIsSaving(false);
     }
   };
@@ -437,38 +494,64 @@ export const InspectorView: React.FC<Props> = ({
           {error && <div className="badge badge-err p-3 w-full justify-start">{error}</div>}
 
           {matched.length > 0 && (
-            <ul className="space-y-3 pt-2">
-              {matched.map((row) => (
-                <li key={row.key} className="border border-[var(--line)] rounded-xl p-3 space-y-2">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div>
-                      <div className="wagon-no font-semibold">{formatWagonNumber(row.wagon_number)}</div>
-                      <button
-                        type="button"
-                        className="text-sm text-[var(--steel)]"
-                        onClick={() => onSelectRoute(row.route_id)}
-                      >
-                        {ru.inspector.route}: {row.route_name}
-                      </button>
+            <div className="space-y-3 pt-2">
+              <InspectorBatchBar
+                selectedCount={selected.size}
+                selectableCount={matched.length}
+                allSelected={matched.length > 0 && matched.every((row) => selected.has(row.key))}
+                busy={isSaving}
+                onToggleAll={() => {
+                  setSelected(
+                    matched.every((row) => selected.has(row.key))
+                      ? new Set()
+                      : new Set(matched.map((row) => row.key)),
+                  );
+                }}
+                onApply={applyBatch}
+              />
+              <ul className="space-y-3">
+                {matched.map((row) => (
+                  <li key={row.key} className="border border-[var(--line)] rounded-xl p-3 space-y-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex items-start gap-2 min-w-0">
+                        <label className="inline-flex items-center min-h-[var(--tap)]">
+                          <input
+                            type="checkbox"
+                            className="inspector-check"
+                            checked={selected.has(row.key)}
+                            onChange={() => {
+                              setSelected((prev) => {
+                                const next = new Set(prev);
+                                if (next.has(row.key)) next.delete(row.key);
+                                else next.add(row.key);
+                                return next;
+                              });
+                            }}
+                            aria-label={formatWagonNumber(row.wagon_number)}
+                          />
+                        </label>
+                        <div>
+                          <div className="wagon-no font-semibold">{formatWagonNumber(row.wagon_number)}</div>
+                          <button
+                            type="button"
+                            className="text-sm text-[var(--steel)]"
+                            onClick={() => onSelectRoute(row.route_id)}
+                          >
+                            {ru.inspector.route}: {row.route_name}
+                          </button>
+                        </div>
+                      </div>
+                      <WagonStatusBadge status={row.terminal_status} />
                     </div>
-                    <WagonStatusBadge status={row.terminal_status} />
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    {INSPECTOR_STATUSES.map((s) => (
-                      <button
-                        key={s.value}
-                        type="button"
-                        className={`btn tap ${row.terminal_status === s.value ? 'btn-primary' : 'btn-secondary'}`}
-                        disabled={busyKey === row.key}
-                        onClick={() => setStatus(row, s.value)}
-                      >
-                        {s.label}
-                      </button>
-                    ))}
-                  </div>
-                </li>
-              ))}
-            </ul>
+                    <InspectorStatusButtons
+                      path={row.inspector_statuses}
+                      disabled={busyKey === row.key || isSaving}
+                      onSelect={(status) => setStatus(row, status)}
+                    />
+                  </li>
+                ))}
+              </ul>
+            </div>
           )}
         </div>
       </details>

@@ -220,6 +220,119 @@ describe('HTTP API', () => {
       });
     }
   });
+
+  it('accumulates inspector statuses, auto-chains cleaning, and applies batch', async () => {
+    await setup();
+    const w1 = makeValidWagonNumber('6113607');
+    const w2 = makeValidWagonNumber('5321045');
+    const route = await transaction(async () =>
+      createRouteRecord({
+        display_name: 'Путь инспектора',
+        product_type_id: 1,
+        station_id: 1,
+        wagons: [
+          { parsed_wagon_number: w1, weight_kg: 68000 },
+          { parsed_wagon_number: w2, weight_kg: 69000 },
+        ],
+      }),
+    );
+    const routeId = Number(route.id);
+    await transaction(async () =>
+      createTerminalListRecord({
+        route_id: routeId,
+        product_type_id: 1,
+        operation_type: 'UNLOADING',
+        confirm_now: true,
+        rows: [
+          { parsed_wagon_number: w1, weight_kg: 68000 },
+          { parsed_wagon_number: w2, weight_kg: 69000 },
+        ],
+      }),
+    );
+
+    const wagons = await query<{ wagon_id: number; wagon_number: string; declared_weight_kg: number }>(
+      `SELECT rw.wagon_id, w.wagon_number, rw.declared_weight_kg
+       FROM route_wagons rw JOIN wagons w ON w.id = rw.wagon_id
+       WHERE rw.route_id = ? ORDER BY rw.sequence_no`,
+      [routeId],
+    );
+    const first = wagons[0];
+    const second = wagons[1];
+
+    const app = await createApiApp();
+    const server = await new Promise<http.Server>((resolve) => {
+      const s = app.listen(0, '127.0.0.1', () => resolve(s));
+    });
+    try {
+      const addr = server.address();
+      const port = typeof addr === 'object' && addr ? addr.port : 0;
+      const base = `http://127.0.0.1:${port}`;
+
+      const cleaned = await fetch(`${base}/api/routes/${routeId}/wagons/${first.wagon_id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ terminal_status: 'CLEANED' }),
+      });
+      expect(cleaned.ok).toBe(true);
+      const cleanedBody = (await cleaned.json()) as { inspector_statuses: string[]; terminal_status: string };
+      expect(cleanedBody.inspector_statuses).toEqual(['AT_TERMINAL', 'UNLOADED', 'CLEANED']);
+      expect(cleanedBody.terminal_status).toBe('CLEANED');
+
+      const weightAfter = (
+        await query<{ declared_weight_kg: number }>(
+          'SELECT declared_weight_kg FROM route_wagons WHERE route_id = ? AND wagon_id = ?',
+          [routeId, first.wagon_id],
+        )
+      )[0];
+      expect(weightAfter.declared_weight_kg).toBe(68000);
+
+      const loaded = await fetch(`${base}/api/routes/${routeId}/wagons/${first.wagon_id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ terminal_status: 'LOADED' }),
+      });
+      const loadedBody = (await loaded.json()) as { inspector_statuses: string[] };
+      expect(loadedBody.inspector_statuses).toEqual(['AT_TERMINAL', 'UNLOADED', 'CLEANED', 'LOADED']);
+
+      const empty = await fetch(`${base}/api/routes/${routeId}/wagons/${first.wagon_id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ terminal_status: 'DEPARTED_EMPTY' }),
+      });
+      const emptyBody = (await empty.json()) as { inspector_statuses: string[]; terminal_status: string };
+      expect(emptyBody.inspector_statuses).toEqual(['AT_TERMINAL', 'UNLOADED', 'CLEANED', 'DEPARTED_EMPTY']);
+      expect(emptyBody.inspector_statuses.includes('LOADED')).toBe(false);
+      expect(emptyBody.terminal_status).toBe('DEPARTED_EMPTY');
+
+      const batch = await fetch(`${base}/api/inspector/wagon-status`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          status: 'UNLOADED',
+          items: [
+            { route_id: routeId, wagon_id: first.wagon_id },
+            { route_id: routeId, wagon_id: second.wagon_id },
+          ],
+        }),
+      });
+      expect(batch.ok).toBe(true);
+      const batchBody = (await batch.json()) as { count: number; applied: Array<{ inspector_statuses: string[] }> };
+      expect(batchBody.count).toBe(2);
+      expect(batchBody.applied[1].inspector_statuses).toContain('UNLOADED');
+      expect(batchBody.applied[1].inspector_statuses).toContain('AT_TERMINAL');
+
+      const detail = await fetch(`${base}/api/routes/${routeId}`);
+      const detailBody = (await detail.json()) as {
+        wagons: Array<{ wagon_number: string; inspector_statuses: string[] }>;
+      };
+      const firstDetail = detailBody.wagons.find((w) => w.wagon_number === first.wagon_number);
+      expect(firstDetail?.inspector_statuses).toEqual(['AT_TERMINAL', 'UNLOADED', 'CLEANED', 'DEPARTED_EMPTY']);
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((err) => (err ? reject(err) : resolve()));
+      });
+    }
+  });
 });
 
 describe('terminal list maintenance', () => {
