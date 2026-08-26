@@ -54,9 +54,9 @@ export const ReferenceDataManager: React.FC<Props> = ({
           <button type="button" className="btn btn-secondary" onClick={() => { setModal('STATION'); setName(''); }}>{ru.refs.addStation}</button>
         </div>
       </div>
-      <div className="flex gap-2 overflow-x-auto">
-        <button type="button" className={`btn ${tab === 'types' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setTab('types')}>{ru.refs.types}</button>
-        <button type="button" className={`btn ${tab === 'stations' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setTab('stations')}>{ru.refs.stations}</button>
+      <div className="chip-row">
+        <button type="button" className={`btn whitespace-nowrap ${tab === 'types' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setTab('types')}>{ru.refs.types}</button>
+        <button type="button" className={`btn whitespace-nowrap ${tab === 'stations' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setTab('stations')}>{ru.refs.stations}</button>
       </div>
       {error && <div className="badge badge-err p-3">{error}</div>}
       <div className="card p-4 space-y-2">

@@ -161,9 +161,16 @@ export const RouteDetailView: React.FC<Props> = ({
       )}
 
       <div className="card p-4 space-y-3">
-        <div className="flex gap-1 overflow-x-auto pb-1">
+        <div className="chip-row">
           {filters.map(([id, label]) => (
-            <button key={id} type="button" className={`btn whitespace-nowrap ${filterTab === id ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setFilterTab(id)}>{label}</button>
+            <button
+              key={id}
+              type="button"
+              className={`btn whitespace-nowrap ${filterTab === id ? 'btn-primary' : 'btn-ghost'}`}
+              onClick={() => setFilterTab(id)}
+            >
+              {label}
+            </button>
           ))}
         </div>
 

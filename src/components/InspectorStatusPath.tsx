@@ -17,7 +17,7 @@ export const InspectorStatusButtons: React.FC<ButtonsProps> = ({
   readOnly,
   onSelect,
 }) => (
-  <div className="flex flex-wrap gap-2">
+  <div className="chip-row">
     {INSPECTOR_STATUSES.map((status) => {
       const on = pathHasStatus(path, status);
       const className = `btn tap ${on ? 'btn-status-on' : 'btn-secondary'}`;

@@ -156,6 +156,16 @@ a:focus-visible {
   transform: translateY(1px) scale(0.98);
 }
 
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 0.5rem;
+}
+.chip-row > .btn {
+  flex: 0 0 auto;
+  max-width: 100%;
+}
+
 .row-interactive {
   transition: background-color 160ms ease;
   cursor: pointer;
