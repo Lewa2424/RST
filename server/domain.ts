@@ -1,7 +1,7 @@
 import { generateInternalCode, nowIso, query, queryOne, run } from './db.js';
 import { AppError } from './errors.js';
 import { validateWagonChecksum, normalizeWagonNumber, isStoredWagonNumber } from './wagonUtils.js';
-import { reconcileRoute, reconcileOpenRoutes } from './routeEngine.js';
+import { reconcileRoute, reconcileOpenRoutes, reconcileRoutesTouchedByList } from './routeEngine.js';
 import { PARSER_VERSION } from './config.js';
 import type { ParsePayload, ParsedWagonRow } from './parsers.js';
 import { isOnTerminal } from './routeStatus.js';
@@ -413,7 +413,7 @@ export async function updateTerminalListRowStatus(
   }
 
   if (options.reconcile !== false) {
-    await reconcileOpenRoutes(row.product_type_id);
+    await reconcileRoutesTouchedByList(row.terminal_list_id);
   }
 
   return {
@@ -437,16 +437,16 @@ export async function applyTerminalListRowStatusBatch(
   }
 
   const applied: ListRowInspectorResult[] = [];
-  const productIds = new Set<number>();
+  const listIds = new Set<number>();
   for (const rawId of listRowIds) {
     const listRowId = Number(rawId);
     if (!listRowId) throw new AppError(400, 'VALIDATION_ERROR', 'Нужен list_row_id');
     const result = await updateTerminalListRowStatus(listRowId, status, { reconcile: false });
     applied.push(result);
-    productIds.add(result.product_type_id);
+    listIds.add(result.terminal_list_id);
   }
-  for (const productTypeId of productIds) {
-    await reconcileOpenRoutes(productTypeId);
+  for (const listId of listIds) {
+    await reconcileRoutesTouchedByList(listId);
   }
   return { applied, count: applied.length };
 }
@@ -586,8 +586,8 @@ export async function applyConfirmedList(listId: number): Promise<void> {
     );
   }
 
-  // Match list wagons to routes by number; refresh all open/closed routes of this product.
-  await reconcileOpenRoutes(list.product_type_id);
+  // Only routes that share wagon numbers with this list — not every CLOSED route of the product.
+  await reconcileRoutesTouchedByList(listId);
 }
 
 export async function confirmDraftTerminalList(listId: number): Promise<Record<string, unknown>> {
@@ -716,16 +716,44 @@ export async function updateTerminalListRecord(
   return (await queryOne('SELECT * FROM terminal_lists WHERE id = ?', [listId])) as Record<string, unknown>;
 }
 
-export async function deleteTerminalListRecord(listId: number): Promise<{ success: true; id: number }> {
+export async function deleteTerminalListRecord(
+  listId: number,
+): Promise<{ success: true; id: number; touched_route_ids: number[] }> {
   const list = await queryOne<{ id: number; product_type_id: number }>(
     'SELECT id, product_type_id FROM terminal_lists WHERE id = ?',
     [listId],
   );
   if (!list) throw new AppError(404, 'NOT_FOUND', 'Список терминала не найден');
 
+  const routeWagons = await query<{ route_id: number; wagon_number: string }>(
+    `SELECT r.id as route_id, w.wagon_number
+     FROM routes r
+     JOIN route_wagons rw ON rw.route_id = r.id
+     JOIN wagons w ON w.id = rw.wagon_id
+     WHERE r.product_type_id = ?
+       AND r.status IN ('ACTIVE', 'PARTIAL', 'HAS_DISCREPANCIES', 'CLOSED')`,
+    [list.product_type_id],
+  );
+  const listRows = await query<{ parsed_wagon_number: string | null }>(
+    'SELECT parsed_wagon_number FROM terminal_list_rows WHERE terminal_list_id = ?',
+    [listId],
+  );
+  const listDigits = new Set(
+    listRows
+      .map((r) => String(r.parsed_wagon_number || '').replace(/\D/g, ''))
+      .filter((n) => n.length > 0),
+  );
+  const routeIds = new Set<number>();
+  for (const row of routeWagons) {
+    const d = String(row.wagon_number || '').replace(/\D/g, '');
+    if (d && listDigits.has(d)) routeIds.add(row.route_id);
+  }
+
   await run('DELETE FROM terminal_lists WHERE id = ?', [listId]);
-  await reconcileOpenRoutes(list.product_type_id);
-  return { success: true, id: listId };
+  for (const routeId of routeIds) {
+    await reconcileRoute(routeId);
+  }
+  return { success: true, id: listId, touched_route_ids: [...routeIds] };
 }
 
 export async function matchRouteCandidates(wagonNumbers: string[], productTypeId?: number | null) {

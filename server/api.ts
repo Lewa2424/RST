@@ -7,7 +7,7 @@ import { AppError, handleRouteError, sendError } from './errors.js';
 import { validateWagonChecksum, normalizeWagonNumber, isStoredWagonNumber } from './wagonUtils.js';
 import { parseExcelBuffer, parseTextContent, parseWordBuffer, type ParsePayload } from './parsers.js';
 import { parseImages } from './ocr.js';
-import { reconcileRoute, reconcileOpenRoutes, syncRouteProgressIfStale } from './routeEngine.js';
+import { reconcileRoute, reconcileOpenRoutes, reconcileRoutesTouchedByList, syncRouteProgressIfStale } from './routeEngine.js';
 import { backupDatabase } from './backup.js';
 import {
   addWagonsToRoute,
@@ -812,7 +812,7 @@ export async function createApiApp(): Promise<express.Express> {
     '/api/terminal-lists/:id',
     asyncHandler(async (req, res) => {
       const result = await transaction(async () => await deleteTerminalListRecord(Number(req.params.id)));
-      res.json(result);
+      res.json({ success: result.success, id: result.id });
     }),
   );
 

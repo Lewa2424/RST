@@ -365,10 +365,11 @@ export async function reconcileRoute(routeId: number): Promise<ReconcileResult> 
   };
 }
 
-/** Reconcile all non-archived routes, optionally limited by product type. */
+/** Reconcile non-archived routes, optionally limited by product type. */
 export async function reconcileOpenRoutes(productTypeId?: number | null): Promise<number> {
   const params: unknown[] = [];
-  let sql = `SELECT id FROM routes WHERE status IN ('ACTIVE', 'PARTIAL', 'HAS_DISCREPANCIES', 'CLOSED')`;
+  // Skip CLOSED here — full product-wide sync of closed routes is too slow for request path.
+  let sql = `SELECT id FROM routes WHERE status IN ('ACTIVE', 'PARTIAL', 'HAS_DISCREPANCIES')`;
   if (productTypeId) {
     sql += ' AND product_type_id = ?';
     params.push(productTypeId);
@@ -378,6 +379,47 @@ export async function reconcileOpenRoutes(productTypeId?: number | null): Promis
     await reconcileRoute(r.id);
   }
   return routes.length;
+}
+
+/**
+ * Reconcile only routes that share wagon numbers with a terminal list (same product).
+ * Used after list confirm/status changes so we don't re-scan every route on Vercel.
+ */
+export async function reconcileRoutesTouchedByList(listId: number): Promise<number> {
+  const list = await queryOne<{ product_type_id: number }>(
+    'SELECT product_type_id FROM terminal_lists WHERE id = ?',
+    [listId],
+  );
+  if (!list) return 0;
+
+  const listRows = await query<{ parsed_wagon_number: string | null }>(
+    'SELECT parsed_wagon_number FROM terminal_list_rows WHERE terminal_list_id = ?',
+    [listId],
+  );
+  const listDigits = new Set(
+    listRows.map((r) => digits(r.parsed_wagon_number)).filter((n) => n.length > 0),
+  );
+  if (listDigits.size === 0) return 0;
+
+  const candidates = await query<{ route_id: number; wagon_number: string }>(
+    `SELECT r.id as route_id, w.wagon_number
+     FROM routes r
+     JOIN route_wagons rw ON rw.route_id = r.id
+     JOIN wagons w ON w.id = rw.wagon_id
+     WHERE r.product_type_id = ?
+       AND r.status IN ('ACTIVE', 'PARTIAL', 'HAS_DISCREPANCIES', 'CLOSED')`,
+    [list.product_type_id],
+  );
+
+  const touched = new Set<number>();
+  for (const row of candidates) {
+    if (listDigits.has(digits(row.wagon_number))) touched.add(row.route_id);
+  }
+
+  for (const routeId of touched) {
+    await reconcileRoute(routeId);
+  }
+  return touched.size;
 }
 
 /** Recompute counters when wagon statuses and route.processed_count disagree. */

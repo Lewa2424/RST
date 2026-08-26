@@ -13,14 +13,21 @@ export class ApiError extends Error {
 }
 
 export async function api<T = unknown>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, init);
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}${path}`, init);
+  } catch {
+    throw new ApiError('Сеть недоступна. Проверьте соединение и повторите.', 0, 'NETWORK');
+  }
   const payload = await res.json().catch(() => null);
   if (!res.ok) {
     const err = payload?.error;
     const message =
       (typeof err === 'string' && err) ||
       (err && typeof err === 'object' && typeof err.message === 'string' && err.message) ||
-      'Не удалось выполнить операцию';
+      (res.status === 504 || res.status === 502
+        ? 'Сервер не успел сохранить список (таймаут). Попробуйте ещё раз — обычно со второго раза быстрее.'
+        : 'Не удалось выполнить операцию');
     throw new ApiError(message, res.status, err?.code, err?.details);
   }
   return payload as T;
