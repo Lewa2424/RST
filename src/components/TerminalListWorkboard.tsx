@@ -219,7 +219,6 @@ export const TerminalListWorkboard: React.FC<Props> = ({
         )}
         <p className="text-sm text-[var(--muted)]">
           {opLabel} · {list.list_date || '—'} · {rows.length} {ru.inspector.wagonsShort}
-          {list.route_display_name ? ` · ${ru.inspector.route}: ${list.route_display_name}` : ''}
         </p>
         <p className="text-sm text-[var(--muted)]">
           {ru.inspector.linkedSummary.replace('{linked}', String(linkedCount)).replace('{total}', String(rows.length))}
@@ -269,7 +268,7 @@ export const TerminalListWorkboard: React.FC<Props> = ({
                           className="text-sm text-[var(--steel)]"
                           onClick={() => onSelectRoute(row.route_id!)}
                         >
-                          {ru.inspector.route}: {row.route_name}
+                          {row.route_name}
                         </button>
                       ) : (
                         <p className="text-sm text-[var(--muted)]">{ru.inspector.noRouteForWagon}</p>

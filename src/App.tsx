@@ -275,8 +275,6 @@ export function App() {
         onClose={() => setIsCreateTerminalListOpen(false)}
         productTypes={productTypes}
         stations={stations}
-        routes={routes}
-        preSelectedRouteId={selectedRouteDetail?.id}
         initialProductTypeId={selectedProductType?.id}
         onSuccess={() => {
           showToast(ru.toast.saved);

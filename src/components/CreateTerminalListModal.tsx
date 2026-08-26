@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { ProductType, Station, Route, ParsedRowCandidate } from '../types';
+import { ProductType, Station, ParsedRowCandidate } from '../types';
 import { PencilEditModal } from './PencilEditModal';
 import { ImagePagesPicker, type ImagePage } from './ImagePagesPicker';
 import { ChecksumBadge } from './StatusBadge';
@@ -15,21 +15,18 @@ interface Props {
   onClose: () => void;
   productTypes: ProductType[];
   stations: Station[];
-  routes: Route[];
-  preSelectedRouteId?: number | null;
   initialProductTypeId?: number | null;
   onSuccess: (newList: unknown) => void;
 }
 
 export const CreateTerminalListModal: React.FC<Props> = ({
-  isOpen, onClose, productTypes, stations, routes, preSelectedRouteId, initialProductTypeId, onSuccess,
+  isOpen, onClose, productTypes, stations, initialProductTypeId, onSuccess,
 }) => {
   const [step, setStep] = useState<1 | 2>(1);
   const [displayName, setDisplayName] = useState('');
   const [nameTouched, setNameTouched] = useState(false);
   const [productTypeId, setProductTypeId] = useState(productTypes[0]?.id ?? 1);
   const [stationId, setStationId] = useState<number | null>(null);
-  const [routeId, setRouteId] = useState<number | null>(preSelectedRouteId || null);
   const [operationType, setOperationType] = useState('UNLOADING');
   const [listDate, setListDate] = useState(todayIsoDate());
   const [importMethod, setImportMethod] = useState<'MANUAL' | 'EXCEL' | 'WORD' | 'IMAGE'>('MANUAL');
@@ -46,7 +43,6 @@ export const CreateTerminalListModal: React.FC<Props> = ({
     if (!isOpen) return;
     const today = todayIsoDate();
     setStep(1);
-    setRouteId(preSelectedRouteId || null);
     setProductTypeId(initialProductTypeId ?? productTypes[0]?.id ?? 1);
     setListDate(today);
     setOperationType('UNLOADING');
@@ -58,7 +54,8 @@ export const CreateTerminalListModal: React.FC<Props> = ({
     setParseError(null);
     setPages([]);
     setImportMethod('MANUAL');
-  }, [isOpen, preSelectedRouteId, initialProductTypeId, productTypes]);
+    setStationId(null);
+  }, [isOpen, initialProductTypeId, productTypes]);
 
   useEffect(() => {
     if (!isOpen || nameTouched) return;
@@ -136,7 +133,7 @@ export const CreateTerminalListModal: React.FC<Props> = ({
       const data = await api('/api/terminal-lists', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          route_id: routeId, product_type_id: productTypeId, station_id: stationId,
+          product_type_id: productTypeId, station_id: stationId,
           display_name: displayName.trim() || defaultTerminalListName(operationType, listDate),
           operation_type: operationType, list_date: listDate, import_method: importMethod,
           confirm_now: true, rows: previewRows,
@@ -163,14 +160,6 @@ export const CreateTerminalListModal: React.FC<Props> = ({
           {step === 1 ? (
             <>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div className="sm:col-span-2">
-                  <label className="lbl">{ru.createList.bindRoute}</label>
-                  <select className="field" value={routeId || ''} onChange={(e) => setRouteId(e.target.value ? Number(e.target.value) : null)}>
-                    {routes.map((r) => <option key={r.id} value={r.id}>{r.display_name}</option>)}
-                    <option value="">{ru.createList.bindNone}</option>
-                  </select>
-                  <p className="text-xs text-[var(--muted)] mt-1">{ru.createList.bindHint}</p>
-                </div>
                 <div>
                   <label className="lbl" htmlFor="op">{ru.createList.operation}</label>
                   <select id="op" className="field" value={operationType} onChange={(e) => setOperationType(e.target.value)}>
@@ -240,19 +229,17 @@ export const CreateTerminalListModal: React.FC<Props> = ({
           ) : (
             <div className="space-y-3">
               {candidates.length > 0 && (
-                <div>
-                  <h4 className="font-semibold mb-2">{ru.createList.candidates}</h4>
-                  <div className="grid gap-2">
+                <div className="rounded-xl border border-[var(--line)] bg-[var(--steel-soft)]/40 p-3 space-y-1">
+                  <h4 className="font-semibold text-sm">{ru.createList.candidates}</h4>
+                  <p className="text-xs text-[var(--muted)]">{ru.createList.autoMatchHint}</p>
+                  <ul className="text-sm space-y-1">
                     {candidates.map((c) => (
-                      <button key={c.id} type="button" className={`btn ${routeId === c.id ? 'btn-primary' : 'btn-secondary'} justify-between`} onClick={() => setRouteId(c.id)}>
+                      <li key={c.id} className="flex justify-between gap-2">
                         <span>{c.display_name}</span>
-                        <span>{c.matches} {ru.createList.matches} / {c.total_in_route}</span>
-                      </button>
+                        <span className="text-[var(--muted)] shrink-0">{c.matches} {ru.createList.matches} / {c.total_in_route}</span>
+                      </li>
                     ))}
-                    <button type="button" className={`btn btn-ghost ${routeId === null ? 'ring-1 ring-[var(--line)]' : ''}`} onClick={() => setRouteId(null)}>
-                      {ru.createList.bindNone}
-                    </button>
-                  </div>
+                  </ul>
                 </div>
               )}
               <div className="flex justify-between">

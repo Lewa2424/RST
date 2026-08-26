@@ -45,7 +45,6 @@ describe('route lifecycle', () => {
 
     const partial = await transaction(async () =>
       createTerminalListRecord({
-        route_id: routeId,
         product_type_id: 1,
         operation_type: 'UNLOADING',
         import_method: 'MANUAL',
@@ -66,7 +65,6 @@ describe('route lifecycle', () => {
 
     await transaction(async () =>
       createTerminalListRecord({
-        route_id: routeId,
         product_type_id: 1,
         operation_type: 'UNLOADING',
         confirm_now: true,
@@ -239,7 +237,6 @@ describe('HTTP API', () => {
     const routeId = Number(route.id);
     await transaction(async () =>
       createTerminalListRecord({
-        route_id: routeId,
         product_type_id: 1,
         operation_type: 'UNLOADING',
         confirm_now: true,
@@ -445,7 +442,6 @@ describe('terminal list maintenance', () => {
 
     const list = await transaction(async () =>
       createTerminalListRecord({
-        route_id: routeId,
         product_type_id: 1,
         operation_type: 'UNLOADING',
         display_name: 'Старое имя',
@@ -454,6 +450,16 @@ describe('terminal list maintenance', () => {
       }),
     );
     const listId = Number(list.id);
+    expect(list.route_id == null).toBe(true);
+
+    const afterList = (
+      await query<{ processed_count: number; status: string }>(
+        'SELECT processed_count, status FROM routes WHERE id = ?',
+        [routeId],
+      )
+    )[0];
+    expect(afterList.processed_count).toBe(1);
+    expect(afterList.status).toBe('CLOSED');
 
     const renamed = await transaction(async () =>
       updateTerminalListRecord(listId, { display_name: 'Новое имя' }),
@@ -466,11 +472,58 @@ describe('terminal list maintenance', () => {
     expect(remaining.length).toBe(0);
 
     const routeRow = (
-      await query<{ processed_count: number; status: string }>('SELECT processed_count, status FROM routes WHERE id = ?', [
-        routeId,
-      ])
+      await query<{ processed_count: number; status: string }>(
+        'SELECT processed_count, status FROM routes WHERE id = ?',
+        [routeId],
+      )
     )[0];
-    expect(routeRow.processed_count).toBe(1);
-    expect(routeRow.status).toBe('CLOSED');
+    expect(routeRow.processed_count).toBe(0);
+    expect(routeRow.status).toBe('ACTIVE');
+  });
+
+  it('matches unbound terminal list wagons to routes by number', async () => {
+    await setup();
+    const w1 = makeValidWagonNumber('6113607');
+    const w2 = makeValidWagonNumber('5321045');
+    const route = await transaction(async () =>
+      createRouteRecord({
+        display_name: 'Автосверка',
+        product_type_id: 1,
+        station_id: 1,
+        wagons: [
+          { parsed_wagon_number: w1, weight_kg: 68000 },
+          { parsed_wagon_number: w2, weight_kg: 69000 },
+        ],
+      }),
+    );
+    const routeId = Number(route.id);
+
+    await transaction(async () =>
+      createTerminalListRecord({
+        product_type_id: 1,
+        operation_type: 'UNLOADING',
+        confirm_now: true,
+        rows: [{ parsed_wagon_number: w1, weight_kg: 68000 }],
+      }),
+    );
+
+    const after = (
+      await query<{ status: string; processed_count: number }>(
+        'SELECT status, processed_count FROM routes WHERE id = ?',
+        [routeId],
+      )
+    )[0];
+    expect(after.processed_count).toBe(1);
+    expect(after.status).toBe('PARTIAL');
+
+    const statuses = await query<{ wagon_number: string; terminal_status: string }>(
+      `SELECT w.wagon_number, rw.terminal_status
+       FROM route_wagons rw JOIN wagons w ON w.id = rw.wagon_id
+       WHERE rw.route_id = ?`,
+      [routeId],
+    );
+    const byNumber = Object.fromEntries(statuses.map((s) => [s.wagon_number, s.terminal_status]));
+    expect(byNumber[w1]).toBe('AT_TERMINAL');
+    expect(byNumber[w2]).toBe('NOT_AT_TERMINAL');
   });
 });

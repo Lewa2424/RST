@@ -7,7 +7,7 @@ import { AppError, handleRouteError, sendError } from './errors.js';
 import { validateWagonChecksum, normalizeWagonNumber, isStoredWagonNumber } from './wagonUtils.js';
 import { parseExcelBuffer, parseTextContent, parseWordBuffer, type ParsePayload } from './parsers.js';
 import { parseImages } from './ocr.js';
-import { reconcileRoute, syncRouteProgressIfStale } from './routeEngine.js';
+import { reconcileRoute, reconcileOpenRoutes, syncRouteProgressIfStale } from './routeEngine.js';
 import { backupDatabase } from './backup.js';
 import {
   addWagonsToRoute,
@@ -400,7 +400,14 @@ export async function createApiApp(): Promise<express.Express> {
     let healed = false;
     await transaction(async () => {
       for (const item of items) {
-        if (await syncRouteProgressIfStale(Number(item.id))) healed = true;
+        const status = String(item.status || '');
+        if (['ACTIVE', 'PARTIAL', 'HAS_DISCREPANCIES'].includes(status)) {
+          // Full reconcile so unbound terminal lists update progress by wagon number.
+          await reconcileRoute(Number(item.id));
+          healed = true;
+        } else if (await syncRouteProgressIfStale(Number(item.id))) {
+          healed = true;
+        }
       }
     });
     if (healed) {
@@ -424,7 +431,7 @@ export async function createApiApp(): Promise<express.Express> {
   app.get('/api/routes/:id', async (req, res) => {
     const { id } = req.params;
     await transaction(async () => {
-      await syncRouteProgressIfStale(Number(id));
+      await reconcileRoute(Number(id));
     });
     const route = await queryOne<Record<string, unknown>>(`${routeSelect} WHERE r.id = ?`, [id]);
     if (!route) {
@@ -446,8 +453,8 @@ export async function createApiApp(): Promise<express.Express> {
       `SELECT tlr.parsed_wagon_number, tlr.weight_kg
        FROM terminal_list_rows tlr
        JOIN terminal_lists tl ON tl.id = tlr.terminal_list_id
-       WHERE tl.route_id = ? AND tl.status = 'CONFIRMED' AND tlr.weight_kg IS NOT NULL`,
-      [id],
+       WHERE tl.status = 'CONFIRMED' AND tl.product_type_id = ? AND tlr.weight_kg IS NOT NULL`,
+      [route.product_type_id],
     );
     const weightMap = new Map(termWeights.map((t) => [t.parsed_wagon_number, t.weight_kg]));
     const discMap = new Map<number, unknown[]>();
@@ -468,9 +475,20 @@ export async function createApiApp(): Promise<express.Express> {
     const terminalLists = await query(
       `SELECT tl.*, pt.name as product_type_name,
               (SELECT COUNT(*) FROM terminal_list_rows tlr WHERE tlr.terminal_list_id = tl.id) as rows_count
-       FROM terminal_lists tl JOIN product_types pt ON pt.id = tl.product_type_id
-       WHERE tl.route_id = ? ORDER BY tl.created_at DESC`,
-      [id],
+       FROM terminal_lists tl
+       JOIN product_types pt ON pt.id = tl.product_type_id
+       WHERE tl.status = 'CONFIRMED'
+         AND (
+           tl.route_id = ?
+           OR tl.id IN (
+             SELECT DISTINCT tlr.terminal_list_id
+             FROM terminal_list_rows tlr
+             JOIN route_wagons rw ON rw.wagon_id = tlr.wagon_id
+             WHERE rw.route_id = ?
+           )
+         )
+       ORDER BY tl.created_at DESC`,
+      [id, id],
     );
     res.json({ ...route, wagons: enrichedWagons, discrepancies, terminal_lists: terminalLists });
   });
@@ -607,6 +625,12 @@ export async function createApiApp(): Promise<express.Express> {
   app.post('/api/routes/:id/reconcile', async (req, res) => {
     const result = await transaction(async () => await reconcileRoute(Number(req.params.id)));
     res.json(result);
+  });
+
+  app.post('/api/routes/reconcile-all', async (req, res) => {
+    const productTypeId = req.body?.product_type_id ? Number(req.body.product_type_id) : null;
+    const count = await transaction(async () => await reconcileOpenRoutes(productTypeId));
+    res.json({ success: true, reconciled: count });
   });
 
   app.post('/api/routes/:id/close', async (req, res) => {

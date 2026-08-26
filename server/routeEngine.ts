@@ -11,10 +11,8 @@ import {
   type RouteStatus,
 } from './routeStatus.js';
 import {
-  applyInspectorStatus,
   currentStatusFromPath,
-  inspectorStatusFromTerminal,
-  resolveInspectorPath,
+  parseInspectorStatuses,
   serializeInspectorStatuses,
 } from './inspectorStatus.js';
 
@@ -60,14 +58,9 @@ function placeholders(count: number): string {
   return Array.from({ length: count }, () => '?').join(',');
 }
 
-function latestFromWagon(rw: RouteWagonRow): { path: ReturnType<typeof resolveInspectorPath>; status: string } {
-  const path = resolveInspectorPath(rw.inspector_statuses, rw.terminal_status);
-  const fromPath = currentStatusFromPath(path);
-  const status = maxTerminalStatus(
-    rw.terminal_status || 'NOT_AT_TERMINAL',
-    fromPath === 'NOT_AT_TERMINAL' ? rw.terminal_status || 'NOT_AT_TERMINAL' : fromPath,
-  );
-  return { path, status };
+/** Inspector path from stored column only — do not seed from terminal_status (lists set that). */
+function pathFromStored(rw: RouteWagonRow) {
+  return parseInspectorStatuses(rw.inspector_statuses);
 }
 
 async function insertDiscrepancy(params: {
@@ -139,10 +132,18 @@ export async function reconcileRoute(routeId: number): Promise<ReconcileResult> 
     [routeId],
   );
 
-  const confirmedLists = await query<{ id: number }>(
-    `SELECT id FROM terminal_lists WHERE route_id = ? AND status = 'CONFIRMED'`,
+  const routeMeta = await queryOne<{ product_type_id: number }>(
+    'SELECT product_type_id FROM routes WHERE id = ?',
     [routeId],
   );
+
+  // Match by wagon number against all confirmed lists of the same product — no route_id bind.
+  const confirmedLists = routeMeta
+    ? await query<{ id: number }>(
+        `SELECT id FROM terminal_lists WHERE status = 'CONFIRMED' AND product_type_id = ?`,
+        [routeMeta.product_type_id],
+      )
+    : [];
   const confirmedListIds = confirmedLists.map((l) => l.id);
 
   let terminalRows: TerminalRow[] = [];
@@ -163,6 +164,14 @@ export async function reconcileRoute(routeId: number): Promise<ReconcileResult> 
     const list = termMap.get(key) ?? [];
     list.push(row);
     termMap.set(key, list);
+  }
+
+  // Lists that share at least one wagon with this route (for EXTRA tips only).
+  const overlappingListIds = new Set<number>();
+  for (const rw of routeWagons) {
+    for (const tr of termMap.get(digits(rw.wagon_number)) ?? []) {
+      overlappingListIds.add(tr.terminal_list_id);
+    }
   }
 
   const seenInRoute = new Map<string, number>();
@@ -216,7 +225,8 @@ export async function reconcileRoute(routeId: number): Promise<ReconcileResult> 
     }
 
     const tRows = termMap.get(digits(rw.wagon_number)) ?? [];
-    let { path, status: latestStatus } = latestFromWagon(rw);
+    let path = pathFromStored(rw);
+    let latestStatus: string = path.length > 0 ? currentStatusFromPath(path) : 'NOT_AT_TERMINAL';
     let terminalWeight: number | null = null;
 
     if (tRows.length > 0) {
@@ -226,13 +236,10 @@ export async function reconcileRoute(routeId: number): Promise<ReconcileResult> 
         listStatus = maxTerminalStatus(listStatus, statusFromListOperation(tr.operation_type));
       }
 
-      const inspectorFromList = inspectorStatusFromTerminal(listStatus);
-      if (inspectorFromList) {
-        path = applyInspectorStatus(path, inspectorFromList);
-      }
-      const fromPath = currentStatusFromPath(path);
+      // List → terminal presence by wagon number. Inspector path is only for manual/batch taps.
+      const fromPath = path.length > 0 ? currentStatusFromPath(path) : 'NOT_AT_TERMINAL';
       latestStatus = maxTerminalStatus(
-        maxTerminalStatus(rw.terminal_status, listStatus),
+        listStatus,
         fromPath === 'NOT_AT_TERMINAL' ? listStatus : fromPath,
       );
 
@@ -255,17 +262,21 @@ export async function reconcileRoute(routeId: number): Promise<ReconcileResult> 
           now,
         });
       }
-    } else if (confirmedLists.length > 0) {
-      await insertDiscrepancy({
-        routeId,
-        wagonId: rw.wagon_id,
-        type: 'MISSING_IN_TERMINAL_LIST',
-        details: { wagon_number: rw.wagon_number },
-        now,
-      });
-      if (!isOnTerminal(latestStatus)) {
+    } else {
+      // Wagon is not in any confirmed list of this product.
+      if (confirmedLists.length > 0) {
+        await insertDiscrepancy({
+          routeId,
+          wagonId: rw.wagon_id,
+          type: 'MISSING_IN_TERMINAL_LIST',
+          details: { wagon_number: rw.wagon_number },
+          now,
+        });
+      }
+      if (!path.length) {
         latestStatus = 'NOT_AT_TERMINAL';
-        path = [];
+      } else {
+        latestStatus = currentStatusFromPath(path);
       }
     }
 
@@ -280,6 +291,7 @@ export async function reconcileRoute(routeId: number): Promise<ReconcileResult> 
 
   const declaredNumbers = new Set(routeWagons.map((rw) => digits(rw.wagon_number)));
   for (const tr of terminalRows) {
+    if (!overlappingListIds.has(tr.terminal_list_id)) continue;
     const extraDigits = digits(tr.parsed_wagon_number);
     if (extraDigits && !declaredNumbers.has(extraDigits)) {
       await insertDiscrepancy({
@@ -337,6 +349,21 @@ export async function reconcileRoute(routeId: number): Promise<ReconcileResult> 
       wagonCount > 0 && processedCount >= wagonCount && blockingCount === 0 && materialCount === 0
     ),
   };
+}
+
+/** Reconcile all non-archived routes, optionally limited by product type. */
+export async function reconcileOpenRoutes(productTypeId?: number | null): Promise<number> {
+  const params: unknown[] = [];
+  let sql = `SELECT id FROM routes WHERE status IN ('ACTIVE', 'PARTIAL', 'HAS_DISCREPANCIES', 'CLOSED')`;
+  if (productTypeId) {
+    sql += ' AND product_type_id = ?';
+    params.push(productTypeId);
+  }
+  const routes = await query<{ id: number }>(sql, params);
+  for (const r of routes) {
+    await reconcileRoute(r.id);
+  }
+  return routes.length;
 }
 
 /** Recompute counters when wagon statuses and route.processed_count disagree. */

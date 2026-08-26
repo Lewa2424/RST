@@ -1,7 +1,7 @@
 import { generateInternalCode, nowIso, query, queryOne, run } from './db.js';
 import { AppError } from './errors.js';
 import { validateWagonChecksum, normalizeWagonNumber, isStoredWagonNumber } from './wagonUtils.js';
-import { reconcileRoute } from './routeEngine.js';
+import { reconcileRoute, reconcileOpenRoutes } from './routeEngine.js';
 import { PARSER_VERSION } from './config.js';
 import type { ParsePayload, ParsedWagonRow } from './parsers.js';
 import { isOnTerminal } from './routeStatus.js';
@@ -383,7 +383,7 @@ export async function createTerminalListRecord(input: {
       operation_type, list_date, import_method, status, created_at, confirmed_at, updated_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
-      input.route_id || null,
+      null, // lists are matched to routes by wagon number, not by bind
       input.product_type_id,
       input.product_grade_id || null,
       input.station_id || null,
@@ -486,7 +486,7 @@ export async function applyConfirmedList(listId: number): Promise<void> {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         row.wagon_id,
-        list.route_id,
+        null,
         listId,
         eventType,
         now,
@@ -498,9 +498,8 @@ export async function applyConfirmedList(listId: number): Promise<void> {
     );
   }
 
-  if (list.route_id) {
-    await reconcileRoute(list.route_id);
-  }
+  // Match list wagons to routes by number; refresh all open/closed routes of this product.
+  await reconcileOpenRoutes(list.product_type_id);
 }
 
 export async function confirmDraftTerminalList(listId: number): Promise<Record<string, unknown>> {
@@ -580,38 +579,25 @@ export async function getTerminalListDetail(listId: number): Promise<Record<stri
       continue;
     }
 
-    const match = list.route_id
-      ? await queryOne<{
-          route_id: number;
-          route_name: string;
-          route_wagon_id: number;
-          terminal_status: string;
-          inspector_statuses: string | null;
-        }>(
-          `SELECT r.id as route_id, r.display_name as route_name, rw.wagon_id as route_wagon_id,
-                  rw.terminal_status, rw.inspector_statuses
-           FROM route_wagons rw
-           JOIN routes r ON r.id = rw.route_id
-           WHERE rw.route_id = ? AND rw.wagon_id = ?`,
-          [list.route_id, row.wagon_id],
-        )
-      : await queryOne<{
-          route_id: number;
-          route_name: string;
-          route_wagon_id: number;
-          terminal_status: string;
-          inspector_statuses: string | null;
-        }>(
-          `SELECT r.id as route_id, r.display_name as route_name, rw.wagon_id as route_wagon_id,
-                  rw.terminal_status, rw.inspector_statuses
-           FROM route_wagons rw
-           JOIN routes r ON r.id = rw.route_id
-           WHERE rw.wagon_id = ? AND r.product_type_id = ?
-             AND r.status IN ('ACTIVE', 'PARTIAL', 'HAS_DISCREPANCIES')
-           ORDER BY r.updated_at DESC
-           LIMIT 1`,
-          [row.wagon_id, list.product_type_id],
-        );
+    const match = await queryOne<{
+      route_id: number;
+      route_name: string;
+      route_wagon_id: number;
+      terminal_status: string;
+      inspector_statuses: string | null;
+    }>(
+      `SELECT r.id as route_id, r.display_name as route_name, rw.wagon_id as route_wagon_id,
+              rw.terminal_status, rw.inspector_statuses
+       FROM route_wagons rw
+       JOIN routes r ON r.id = rw.route_id
+       WHERE rw.wagon_id = ? AND r.product_type_id = ?
+         AND r.status IN ('ACTIVE', 'PARTIAL', 'HAS_DISCREPANCIES', 'CLOSED')
+       ORDER BY
+         CASE WHEN r.status IN ('ACTIVE', 'PARTIAL', 'HAS_DISCREPANCIES') THEN 0 ELSE 1 END,
+         r.updated_at DESC
+       LIMIT 1`,
+      [row.wagon_id, list.product_type_id],
+    );
 
     enriched.push({
       ...row,
@@ -642,16 +628,14 @@ export async function updateTerminalListRecord(
 }
 
 export async function deleteTerminalListRecord(listId: number): Promise<{ success: true; id: number }> {
-  const list = await queryOne<{ id: number; route_id: number | null }>(
-    'SELECT id, route_id FROM terminal_lists WHERE id = ?',
+  const list = await queryOne<{ id: number; product_type_id: number }>(
+    'SELECT id, product_type_id FROM terminal_lists WHERE id = ?',
     [listId],
   );
   if (!list) throw new AppError(404, 'NOT_FOUND', 'Список терминала не найден');
 
   await run('DELETE FROM terminal_lists WHERE id = ?', [listId]);
-  if (list.route_id) {
-    await reconcileRoute(list.route_id);
-  }
+  await reconcileOpenRoutes(list.product_type_id);
   return { success: true, id: listId };
 }
 
