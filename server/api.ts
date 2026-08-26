@@ -400,14 +400,8 @@ export async function createApiApp(): Promise<express.Express> {
     let healed = false;
     await transaction(async () => {
       for (const item of items) {
-        const status = String(item.status || '');
-        if (['ACTIVE', 'PARTIAL', 'HAS_DISCREPANCIES'].includes(status)) {
-          // Full reconcile so unbound terminal lists update progress by wagon number.
-          await reconcileRoute(Number(item.id));
-          healed = true;
-        } else if (await syncRouteProgressIfStale(Number(item.id))) {
-          healed = true;
-        }
+        // Lightweight counter sync only — full reconcile on list save / route open.
+        if (await syncRouteProgressIfStale(Number(item.id))) healed = true;
       }
     });
     if (healed) {
@@ -431,6 +425,7 @@ export async function createApiApp(): Promise<express.Express> {
   app.get('/api/routes/:id', async (req, res) => {
     const { id } = req.params;
     await transaction(async () => {
+      // Single-route reconcile is OK; list endpoint must stay light (Vercel timeout).
       await reconcileRoute(Number(id));
     });
     const route = await queryOne<Record<string, unknown>>(`${routeSelect} WHERE r.id = ?`, [id]);
