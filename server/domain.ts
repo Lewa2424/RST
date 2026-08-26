@@ -363,6 +363,94 @@ export async function applyInspectorStatusBatch(
   return { applied, count: applied.length };
 }
 
+export interface ListRowInspectorResult {
+  list_row_id: number;
+  terminal_list_id: number;
+  product_type_id: number;
+  terminal_status: string;
+  inspector_statuses: InspectorStatus[];
+}
+
+export async function updateTerminalListRowStatus(
+  listRowId: number,
+  status: string,
+  options: { reconcile?: boolean } = {},
+): Promise<ListRowInspectorResult> {
+  if (!isInspectorStatus(status)) {
+    throw new AppError(400, 'VALIDATION_ERROR', 'Неизвестный статус инспектора');
+  }
+
+  const row = await queryOne<{
+    id: number;
+    terminal_list_id: number;
+    wagon_id: number | null;
+    inspector_statuses: string | null;
+    product_type_id: number;
+  }>(
+    `SELECT tlr.id, tlr.terminal_list_id, tlr.wagon_id, tlr.inspector_statuses, tl.product_type_id
+     FROM terminal_list_rows tlr
+     JOIN terminal_lists tl ON tl.id = tlr.terminal_list_id
+     WHERE tlr.id = ?`,
+    [listRowId],
+  );
+  if (!row) throw new AppError(404, 'NOT_FOUND', 'Строка списка не найдена');
+
+  const now = nowIso();
+  const path = applyInspectorStatus(resolveInspectorPath(row.inspector_statuses, null), status);
+  const tip = currentStatusFromPath(path);
+
+  await run(`UPDATE terminal_list_rows SET inspector_statuses = ? WHERE id = ?`, [
+    serializeInspectorStatuses(path),
+    row.id,
+  ]);
+
+  if (row.wagon_id) {
+    await run(
+      `INSERT INTO wagon_events (wagon_id, route_id, terminal_list_id, event_type, event_at, product_type_id, created_at)
+       VALUES (?, NULL, ?, ?, ?, ?, ?)`,
+      [row.wagon_id, row.terminal_list_id, status, now, row.product_type_id, now],
+    );
+  }
+
+  if (options.reconcile !== false) {
+    await reconcileOpenRoutes(row.product_type_id);
+  }
+
+  return {
+    list_row_id: row.id,
+    terminal_list_id: row.terminal_list_id,
+    product_type_id: row.product_type_id,
+    terminal_status: tip,
+    inspector_statuses: path,
+  };
+}
+
+export async function applyTerminalListRowStatusBatch(
+  status: string,
+  listRowIds: number[],
+): Promise<{ applied: ListRowInspectorResult[]; count: number }> {
+  if (!isInspectorStatus(status)) {
+    throw new AppError(400, 'VALIDATION_ERROR', 'Неизвестный статус инспектора');
+  }
+  if (!listRowIds.length) {
+    throw new AppError(400, 'VALIDATION_ERROR', 'Не выбраны вагоны');
+  }
+
+  const applied: ListRowInspectorResult[] = [];
+  const productIds = new Set<number>();
+  for (const rawId of listRowIds) {
+    const listRowId = Number(rawId);
+    if (!listRowId) throw new AppError(400, 'VALIDATION_ERROR', 'Нужен list_row_id');
+    const result = await updateTerminalListRowStatus(listRowId, status, { reconcile: false });
+    applied.push(result);
+    productIds.add(result.product_type_id);
+  }
+  for (const productTypeId of productIds) {
+    await reconcileOpenRoutes(productTypeId);
+  }
+  return { applied, count: applied.length };
+}
+
 export async function createTerminalListRecord(input: {
   route_id?: number | null;
   product_type_id: number;
@@ -437,8 +525,8 @@ async function insertTerminalRows(
     await run(
       `INSERT INTO terminal_list_rows (
         terminal_list_id, wagon_id, raw_wagon_number, parsed_wagon_number, checksum_valid,
-        weight_kg, row_status, parsing_confidence, source_row_no, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        weight_kg, row_status, inspector_statuses, parsing_confidence, source_row_no, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, '[]', ?, ?, ?)`,
       [
         listId,
         wagonId,
@@ -559,22 +647,26 @@ export async function getTerminalListDetail(listId: number): Promise<Record<stri
     weight_kg: number | null;
     row_status: string;
     source_row_no: number | null;
+    inspector_statuses: string | null;
   }>(
-    `SELECT id, wagon_id, raw_wagon_number, parsed_wagon_number, weight_kg, row_status, source_row_no
+    `SELECT id, wagon_id, raw_wagon_number, parsed_wagon_number, weight_kg, row_status, source_row_no, inspector_statuses
      FROM terminal_list_rows WHERE terminal_list_id = ? ORDER BY source_row_no ASC, id ASC`,
     [listId],
   );
 
   const enriched = [];
   for (const row of rows) {
+    const path = resolveInspectorPath(row.inspector_statuses, null);
+    const tip = currentStatusFromPath(path);
+
     if (!row.wagon_id) {
       enriched.push({
         ...row,
         route_id: null,
         route_name: null,
         route_wagon_id: null,
-        terminal_status: null,
-        inspector_statuses: [],
+        terminal_status: tip === 'NOT_AT_TERMINAL' ? 'NOT_AT_TERMINAL' : tip,
+        inspector_statuses: path,
       });
       continue;
     }
@@ -583,11 +675,8 @@ export async function getTerminalListDetail(listId: number): Promise<Record<stri
       route_id: number;
       route_name: string;
       route_wagon_id: number;
-      terminal_status: string;
-      inspector_statuses: string | null;
     }>(
-      `SELECT r.id as route_id, r.display_name as route_name, rw.wagon_id as route_wagon_id,
-              rw.terminal_status, rw.inspector_statuses
+      `SELECT r.id as route_id, r.display_name as route_name, rw.wagon_id as route_wagon_id
        FROM route_wagons rw
        JOIN routes r ON r.id = rw.route_id
        WHERE rw.wagon_id = ? AND r.product_type_id = ?
@@ -604,8 +693,8 @@ export async function getTerminalListDetail(listId: number): Promise<Record<stri
       route_id: match?.route_id ?? null,
       route_name: match?.route_name ?? null,
       route_wagon_id: match?.route_wagon_id ?? null,
-      terminal_status: match?.terminal_status ?? null,
-      inspector_statuses: resolveInspectorPath(match?.inspector_statuses, match?.terminal_status),
+      terminal_status: tip === 'NOT_AT_TERMINAL' ? 'NOT_AT_TERMINAL' : tip,
+      inspector_statuses: path,
     });
   }
 
@@ -640,6 +729,9 @@ export async function deleteTerminalListRecord(listId: number): Promise<{ succes
 }
 
 export async function matchRouteCandidates(wagonNumbers: string[], productTypeId?: number | null) {
+  if (!productTypeId) {
+    throw new AppError(400, 'VALIDATION_ERROR', 'Вид продукции обязателен для поиска по маршрутам');
+  }
   const normNumbers = wagonNumbers.map((w) => normalizeWagonNumber(w)).filter((n) => isStoredWagonNumber(n));
   if (normNumbers.length === 0) return [];
 
@@ -651,12 +743,9 @@ export async function matchRouteCandidates(wagonNumbers: string[], productTypeId
     JOIN route_wagons rw ON rw.route_id = r.id
     JOIN wagons w ON w.id = rw.wagon_id
     WHERE r.status IN ('ACTIVE', 'PARTIAL', 'HAS_DISCREPANCIES')
+      AND r.product_type_id = ?
   `;
-  const params: unknown[] = [];
-  if (productTypeId) {
-    sql += ' AND r.product_type_id = ?';
-    params.push(productTypeId);
-  }
+  const params: unknown[] = [productTypeId];
 
   const joined = await query<{
     id: number;

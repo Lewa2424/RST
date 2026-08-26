@@ -152,6 +152,7 @@ export interface TerminalListRow {
   checksum_valid?: number | null;
   weight_kg?: number | null;
   row_status: 'VALID' | 'INVALID_NUMBER' | 'DUPLICATE' | 'UNMATCHED' | 'CONFLICT' | 'CONFIRMED';
+  inspector_statuses?: InspectorStatus[] | string | null;
   parsing_confidence?: number | null;
   source_row_no?: number | null;
   notes?: string | null;

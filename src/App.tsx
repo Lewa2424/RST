@@ -307,7 +307,6 @@ export function App() {
           onClose={() => setEditingWagon(null)}
           wagonNumber={editingWagon.wagon_number}
           weightKg={editingWagon.declared_weight_kg}
-          terminalStatus={editingWagon.terminal_status}
           notes={editingWagon.notes || ''}
           onSave={async (updated) => {
             try {
@@ -317,7 +316,6 @@ export function App() {
                 body: JSON.stringify({
                   wagon_number: updated.parsed_wagon_number,
                   declared_weight_kg: updated.weight_kg,
-                  terminal_status: updated.terminal_status,
                   notes: updated.notes,
                 }),
               });
@@ -328,8 +326,7 @@ export function App() {
               setError(err instanceof ApiError ? err.message : ru.errors.generic);
             }
           }}
-        />
-      )}
+        />      )}
       {editingRoute && (
         <EditRouteModal
           isOpen

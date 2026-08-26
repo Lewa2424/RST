@@ -1,15 +1,17 @@
 import http from 'node:http';
 import { afterEach, describe, expect, it } from 'vitest';
-import { closeDatabase, openDatabase, query, run, transaction } from '../server/db';
+import { closeDatabase, openDatabase, query, queryOne, run, transaction } from '../server/db';
 import {
   addWagonsToRoute,
   archiveRoute,
   createRouteRecord,
   createTerminalListRecord,
   deleteTerminalListRecord,
+  getTerminalListDetail,
   parseStatusFilter,
   unarchiveRoute,
   updateTerminalListRecord,
+  updateTerminalListRowStatus,
 } from '../server/domain';
 import { makeValidWagonNumber } from '../server/wagonUtils';
 import { createApiApp } from '../server/api';
@@ -525,5 +527,107 @@ describe('terminal list maintenance', () => {
     const byNumber = Object.fromEntries(statuses.map((s) => [s.wagon_number, s.terminal_status]));
     expect(byNumber[w1]).toBe('AT_TERMINAL');
     expect(byNumber[w2]).toBe('NOT_AT_TERMINAL');
+  });
+
+  it('stores inspector status on terminal list rows without a route match', async () => {
+    await setup();
+    const w1 = makeValidWagonNumber('7113607');
+    const list = await transaction(async () =>
+      createTerminalListRecord({
+        product_type_id: 1,
+        operation_type: 'LOADING',
+        confirm_now: true,
+        rows: [{ parsed_wagon_number: w1, weight_kg: 70000 }],
+      }),
+    );
+    const detail = await getTerminalListDetail(Number(list.id));
+    const row = (detail?.rows as Array<{ id: number; route_id: number | null }>)[0];
+    expect(row.route_id).toBeNull();
+
+    const app = await createApiApp();
+    const server = await new Promise<http.Server>((resolve) => {
+      const s = app.listen(0, '127.0.0.1', () => resolve(s));
+    });
+    try {
+      const addr = server.address();
+      const port = typeof addr === 'object' && addr ? addr.port : 0;
+      const base = `http://127.0.0.1:${port}`;
+
+      const res = await fetch(`${base}/api/terminal-list-rows/${row.id}/status`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'LOADED' }),
+      });
+      expect(res.ok).toBe(true);
+      const body = (await res.json()) as { inspector_statuses: string[]; terminal_status: string };
+      expect(body.inspector_statuses).toEqual(['AT_TERMINAL', 'UNLOADED', 'CLEANED', 'LOADED']);
+      expect(body.terminal_status).toBe('LOADED');
+
+      const stored = await queryOne<{ inspector_statuses: string }>(
+        'SELECT inspector_statuses FROM terminal_list_rows WHERE id = ?',
+        [row.id],
+      );
+      expect(JSON.parse(stored?.inspector_statuses || '[]')).toEqual([
+        'AT_TERMINAL',
+        'UNLOADED',
+        'CLEANED',
+        'LOADED',
+      ]);
+
+      const batch = await fetch(`${base}/api/inspector/wagon-status`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'DEPARTED_EMPTY', list_row_ids: [row.id] }),
+      });
+      expect(batch.ok).toBe(true);
+      const batchBody = (await batch.json()) as {
+        applied: Array<{ inspector_statuses: string[]; terminal_status: string }>;
+      };
+      expect(batchBody.applied[0].inspector_statuses).toEqual([
+        'AT_TERMINAL',
+        'UNLOADED',
+        'CLEANED',
+        'DEPARTED_EMPTY',
+      ]);
+      expect(batchBody.applied[0].terminal_status).toBe('DEPARTED_EMPTY');
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+    }
+  });
+
+  it('syncs list-row inspector status onto matched route wagons', async () => {
+    await setup();
+    const w1 = makeValidWagonNumber('8113607');
+    const route = await transaction(async () =>
+      createRouteRecord({
+        display_name: 'Синк статусов',
+        product_type_id: 1,
+        station_id: 1,
+        wagons: [{ parsed_wagon_number: w1, weight_kg: 68000 }],
+      }),
+    );
+    const routeId = Number(route.id);
+    const list = await transaction(async () =>
+      createTerminalListRecord({
+        product_type_id: 1,
+        operation_type: 'UNLOADING',
+        confirm_now: true,
+        rows: [{ parsed_wagon_number: w1, weight_kg: 68000 }],
+      }),
+    );
+    const detail = await getTerminalListDetail(Number(list.id));
+    const row = (detail?.rows as Array<{ id: number }>)[0];
+
+    await transaction(async () => updateTerminalListRowStatus(row.id, 'CLEANED'));
+
+    const rw = (
+      await query<{ terminal_status: string; inspector_statuses: string; processed_for_route: number }>(
+        'SELECT terminal_status, inspector_statuses, processed_for_route FROM route_wagons WHERE route_id = ?',
+        [routeId],
+      )
+    )[0];
+    expect(JSON.parse(rw.inspector_statuses)).toEqual(['AT_TERMINAL', 'UNLOADED', 'CLEANED']);
+    expect(rw.terminal_status).toBe('CLEANED');
+    expect(rw.processed_for_route).toBe(1);
   });
 });

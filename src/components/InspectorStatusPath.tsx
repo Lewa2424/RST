@@ -64,30 +64,34 @@ export const InspectorBatchBar: React.FC<BatchBarProps> = ({
   busy,
   onToggleAll,
   onApply,
-}) => (
-  <div className="space-y-2">
-    <div className="flex flex-wrap items-center gap-3">
-      <label className="inline-flex items-center gap-2 min-h-[var(--tap)]">
-        <input
-          type="checkbox"
-          className="inspector-check"
-          checked={selectableCount > 0 && allSelected}
-          disabled={selectableCount === 0 || busy}
-          onChange={onToggleAll}
-        />
-        <span className="text-sm font-semibold">{ru.inspector.selectAll}</span>
-      </label>
-      <span className="text-sm text-[var(--muted)]">
-        {ru.inspector.selectedCount.replace('{count}', String(selectedCount))}
-      </span>
+}) => {
+  if (selectableCount === 0) return null;
+
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center gap-3">
+        <label className="inline-flex items-center gap-2 min-h-[var(--tap)]">
+          <input
+            type="checkbox"
+            className="inspector-check"
+            checked={allSelected}
+            disabled={busy}
+            onChange={onToggleAll}
+          />
+          <span className="text-sm font-semibold">{ru.inspector.selectAll}</span>
+        </label>
+        <span className="text-sm text-[var(--muted)]">
+          {ru.inspector.selectedCount.replace('{count}', String(selectedCount))}
+        </span>
+      </div>
+      <p className="text-sm text-[var(--muted)]">
+        {selectedCount > 0 ? ru.inspector.batchHint : ru.inspector.batchNeedSelection}
+      </p>
+      <InspectorStatusButtons
+        path={[]}
+        disabled={busy || selectedCount === 0}
+        onSelect={onApply}
+      />
     </div>
-    <p className="text-sm text-[var(--muted)]">
-      {selectedCount > 0 ? ru.inspector.batchHint : ru.inspector.batchNeedSelection}
-    </p>
-    <InspectorStatusButtons
-      path={[]}
-      disabled={busy || selectedCount === 0}
-      onSelect={onApply}
-    />
-  </div>
-);
+  );
+};

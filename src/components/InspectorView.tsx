@@ -331,7 +331,6 @@ export const InspectorView: React.FC<Props> = ({
           setSelectedList(null);
           loadLists();
         }}
-        onSelectRoute={onSelectRoute}
         onStatusChanged={onStatusChanged}
         onReload={async () => {
           if (selectedListId) await loadListDetail(selectedListId);

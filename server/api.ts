@@ -13,6 +13,7 @@ import {
   addWagonsToRoute,
   archiveRoute,
   applyInspectorStatusBatch,
+  applyTerminalListRowStatusBatch,
   cancelImportSession,
   confirmDraftTerminalList,
   confirmImportSession,
@@ -24,6 +25,7 @@ import {
   matchRouteCandidates,
   updateRouteWagonRecord,
   updateTerminalListRecord,
+  updateTerminalListRowStatus,
   unarchiveRoute,
   pagination,
   parseStatusFilter,
@@ -475,9 +477,11 @@ export async function createApiApp(): Promise<express.Express> {
       `SELECT tlr.parsed_wagon_number, tlr.weight_kg
        FROM terminal_list_rows tlr
        JOIN terminal_lists tl ON tl.id = tlr.terminal_list_id
-       WHERE tl.status = 'CONFIRMED' AND tl.product_type_id = ? AND tlr.weight_kg IS NOT NULL`,
+       WHERE tl.status = 'CONFIRMED' AND tl.product_type_id = ? AND tlr.weight_kg IS NOT NULL
+       ORDER BY COALESCE(tl.confirmed_at, tl.updated_at, tl.created_at) ASC, tlr.id ASC`,
       [route.product_type_id],
     );
+    // Latest non-null weight wins when the same wagon appears in several lists.
     const weightMap = new Map(termWeights.map((t) => [t.parsed_wagon_number, t.weight_kg]));
     const discMap = new Map<number, unknown[]>();
     for (const d of discrepancies) {
@@ -638,8 +642,25 @@ export async function createApiApp(): Promise<express.Express> {
     '/api/inspector/wagon-status',
     asyncHandler(async (req, res) => {
       const status = String(req.body?.status || '');
+      const listRowIds = Array.isArray(req.body?.list_row_ids) ? req.body.list_row_ids : null;
+      if (listRowIds) {
+        const result = await transaction(async () => await applyTerminalListRowStatusBatch(status, listRowIds));
+        res.json({ success: true, ...result });
+        return;
+      }
       const items = Array.isArray(req.body?.items) ? req.body.items : [];
       const result = await transaction(async () => await applyInspectorStatusBatch(status, items));
+      res.json({ success: true, ...result });
+    }),
+  );
+
+  app.put(
+    '/api/terminal-list-rows/:id/status',
+    asyncHandler(async (req, res) => {
+      const status = String(req.body?.status || '');
+      const result = await transaction(async () =>
+        await updateTerminalListRowStatus(Number(req.params.id), status),
+      );
       res.json({ success: true, ...result });
     }),
   );
@@ -727,8 +748,12 @@ export async function createApiApp(): Promise<express.Express> {
   });
 
   app.post('/api/terminal-lists/match-candidates', async (req, res) => {
+    if (!req.body?.product_type_id) {
+      sendError(res, 400, 'VALIDATION_ERROR', 'Вид продукции обязателен');
+      return;
+    }
     const numbers = Array.isArray(req.body?.wagon_numbers) ? req.body.wagon_numbers : [];
-    res.json(await matchRouteCandidates(numbers, req.body?.product_type_id));
+    res.json(await matchRouteCandidates(numbers, Number(req.body.product_type_id)));
   });
 
   app.post(

@@ -14,6 +14,7 @@ import {
   currentStatusFromPath,
   parseInspectorStatuses,
   serializeInspectorStatuses,
+  type InspectorStatus,
 } from './inspectorStatus.js';
 
 export interface ReconcileResult {
@@ -48,6 +49,7 @@ interface TerminalRow {
   weight_kg: number | null;
   operation_type: string;
   terminal_list_id: number;
+  inspector_statuses?: string | null;
 }
 
 function digits(value: string | null | undefined): string {
@@ -61,6 +63,16 @@ function placeholders(count: number): string {
 /** Inspector path from stored column only — do not seed from terminal_status (lists set that). */
 function pathFromStored(rw: RouteWagonRow) {
   return parseInspectorStatuses(rw.inspector_statuses);
+}
+
+function mergeListInspectorPaths(rows: TerminalRow[]): InspectorStatus[] {
+  const set = new Set<InspectorStatus>();
+  for (const row of rows) {
+    for (const status of parseInspectorStatuses(row.inspector_statuses)) {
+      set.add(status);
+    }
+  }
+  return parseInspectorStatuses([...set]);
 }
 
 async function insertDiscrepancy(params: {
@@ -149,7 +161,7 @@ export async function reconcileRoute(routeId: number): Promise<ReconcileResult> 
   let terminalRows: TerminalRow[] = [];
   if (confirmedListIds.length > 0) {
     terminalRows = await query<TerminalRow>(
-      `SELECT tlr.parsed_wagon_number, tlr.weight_kg, tl.operation_type, tl.id as terminal_list_id
+      `SELECT tlr.parsed_wagon_number, tlr.weight_kg, tlr.inspector_statuses, tl.operation_type, tl.id as terminal_list_id
        FROM terminal_list_rows tlr
        JOIN terminal_lists tl ON tl.id = tlr.terminal_list_id
        WHERE tlr.terminal_list_id IN (${placeholders(confirmedListIds.length)})`,
@@ -211,8 +223,9 @@ export async function reconcileRoute(routeId: number): Promise<ReconcileResult> 
        FROM route_wagons rw2
        JOIN routes r ON r.id = rw2.route_id
        WHERE rw2.wagon_id = ? AND rw2.route_id != ?
+         AND r.product_type_id = ?
          AND r.status IN ('ACTIVE', 'PARTIAL', 'HAS_DISCREPANCIES')`,
-      [rw.wagon_id, routeId],
+      [rw.wagon_id, routeId, routeMeta?.product_type_id ?? null],
     );
     if (conflictRoutes.length > 0) {
       await insertDiscrepancy({
@@ -225,7 +238,9 @@ export async function reconcileRoute(routeId: number): Promise<ReconcileResult> 
     }
 
     const tRows = termMap.get(digits(rw.wagon_number)) ?? [];
-    let path = pathFromStored(rw);
+    const listPath = mergeListInspectorPaths(tRows);
+    // List row statuses are the source of truth for inspector chips when present.
+    let path = listPath.length > 0 ? listPath : pathFromStored(rw);
     let latestStatus: string = path.length > 0 ? currentStatusFromPath(path) : 'NOT_AT_TERMINAL';
     let terminalWeight: number | null = null;
 
@@ -236,7 +251,6 @@ export async function reconcileRoute(routeId: number): Promise<ReconcileResult> 
         listStatus = maxTerminalStatus(listStatus, statusFromListOperation(tr.operation_type));
       }
 
-      // List → terminal presence by wagon number. Inspector path is only for manual/batch taps.
       const fromPath = path.length > 0 ? currentStatusFromPath(path) : 'NOT_AT_TERMINAL';
       latestStatus = maxTerminalStatus(
         listStatus,

@@ -14,8 +14,8 @@ interface ListDetail extends TerminalList {
 }
 
 interface StatusResult {
-  route_id: number;
-  wagon_id: number;
+  list_row_id: number;
+  terminal_list_id: number;
   terminal_status: string;
   inspector_statuses: InspectorStatus[];
 }
@@ -23,16 +23,11 @@ interface StatusResult {
 interface Props {
   list: ListDetail;
   onBack: () => void;
-  onSelectRoute: (routeId: number) => void;
   onStatusChanged: () => void;
   onReload: () => Promise<void>;
   onRename: (displayName: string) => Promise<void>;
   onDelete: () => Promise<void>;
   actionBusy?: boolean;
-}
-
-function rowKey(row: TerminalListWorkboardRow): string {
-  return `${row.route_id}-${row.route_wagon_id}`;
 }
 
 function rowPath(row: TerminalListWorkboardRow): InspectorStatus[] {
@@ -42,7 +37,6 @@ function rowPath(row: TerminalListWorkboardRow): InspectorStatus[] {
 export const TerminalListWorkboard: React.FC<Props> = ({
   list,
   onBack,
-  onSelectRoute,
   onStatusChanged,
   onReload,
   onRename,
@@ -55,7 +49,7 @@ export const TerminalListWorkboard: React.FC<Props> = ({
   const [rows, setRows] = useState(list.rows);
   const [isRenaming, setIsRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState(list.display_name || `#${list.id}`);
-  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [selected, setSelected] = useState<Set<number>>(new Set());
 
   React.useEffect(() => {
     setRows(list.rows);
@@ -64,11 +58,8 @@ export const TerminalListWorkboard: React.FC<Props> = ({
     setSelected(new Set());
   }, [list]);
 
-  const selectableKeys = useMemo(
-    () => rows.filter((row) => row.route_id && row.route_wagon_id).map(rowKey),
-    [rows],
-  );
-  const allSelected = selectableKeys.length > 0 && selectableKeys.every((key) => selected.has(key));
+  const selectableIds = useMemo(() => rows.map((row) => row.id), [rows]);
+  const allSelected = selectableIds.length > 0 && selectableIds.every((id) => selected.has(id));
 
   const submitRename = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -86,10 +77,10 @@ export const TerminalListWorkboard: React.FC<Props> = ({
     }
   };
 
-  const applyResult = (routeId: number, wagonId: number, result: StatusResult) => {
+  const applyResult = (result: StatusResult) => {
     setRows((prev) =>
       prev.map((r) =>
-        r.route_id === routeId && r.route_wagon_id === wagonId
+        r.id === result.list_row_id
           ? {
               ...r,
               terminal_status: result.terminal_status,
@@ -101,18 +92,16 @@ export const TerminalListWorkboard: React.FC<Props> = ({
   };
 
   const setStatus = async (row: TerminalListWorkboardRow, status: InspectorStatus) => {
-    if (!row.route_id || !row.route_wagon_id) return;
-    const key = String(row.id);
-    setBusyKey(key);
+    setBusyKey(String(row.id));
     setIsSaving(true);
     setError(null);
     try {
-      const result = await api<StatusResult>(`/api/routes/${row.route_id}/wagons/${row.route_wagon_id}`, {
+      const result = await api<StatusResult>(`/api/terminal-list-rows/${row.id}/status`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ terminal_status: status }),
+        body: JSON.stringify({ status }),
       });
-      applyResult(row.route_id, row.route_wagon_id, result);
+      applyResult(result);
       onStatusChanged();
       await onReload();
     } catch (err) {
@@ -124,20 +113,18 @@ export const TerminalListWorkboard: React.FC<Props> = ({
   };
 
   const applyBatch = async (status: InspectorStatus) => {
-    const items = rows
-      .filter((row) => row.route_id && row.route_wagon_id && selected.has(rowKey(row)))
-      .map((row) => ({ route_id: row.route_id as number, wagon_id: row.route_wagon_id as number }));
-    if (!items.length) return;
+    const listRowIds = rows.filter((row) => selected.has(row.id)).map((row) => row.id);
+    if (!listRowIds.length) return;
     setIsSaving(true);
     setError(null);
     try {
       const result = await api<{ applied: StatusResult[] }>('/api/inspector/wagon-status', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status, items }),
+        body: JSON.stringify({ status, list_row_ids: listRowIds }),
       });
       for (const item of result.applied || []) {
-        applyResult(item.route_id, item.wagon_id, item);
+        applyResult(item);
       }
       onStatusChanged();
       await onReload();
@@ -148,11 +135,11 @@ export const TerminalListWorkboard: React.FC<Props> = ({
     }
   };
 
-  const toggleOne = (key: string) => {
+  const toggleOne = (id: number) => {
     setSelected((prev) => {
       const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
       return next;
     });
   };
@@ -231,45 +218,37 @@ export const TerminalListWorkboard: React.FC<Props> = ({
         <h3 className="text-lg">{ru.inspector.statusNow}</h3>
         <InspectorBatchBar
           selectedCount={selected.size}
-          selectableCount={selectableKeys.length}
+          selectableCount={selectableIds.length}
           allSelected={allSelected}
           busy={isSaving}
           onToggleAll={() => {
-            setSelected(allSelected ? new Set() : new Set(selectableKeys));
+            setSelected(allSelected ? new Set() : new Set(selectableIds));
           }}
           onApply={applyBatch}
         />
         <ul className="space-y-3">
           {rows.map((row) => {
             const number = row.parsed_wagon_number || row.raw_wagon_number;
-            const canSetStatus = Boolean(row.route_id && row.route_wagon_id);
-            const key = rowKey(row);
             const path = rowPath(row);
             return (
               <li key={row.id} className="border border-[var(--line)] rounded-xl p-3 space-y-2">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="flex items-start gap-2 min-w-0">
-                    {canSetStatus ? (
-                      <label className="inline-flex items-center min-h-[var(--tap)]">
-                        <input
-                          type="checkbox"
-                          className="inspector-check"
-                          checked={selected.has(key)}
-                          onChange={() => toggleOne(key)}
-                          aria-label={formatWagonNumber(number)}
-                        />
-                      </label>
-                    ) : null}
+                    <label className="inline-flex items-center min-h-[var(--tap)]">
+                      <input
+                        type="checkbox"
+                        className="inspector-check"
+                        checked={selected.has(row.id)}
+                        onChange={() => toggleOne(row.id)}
+                        aria-label={formatWagonNumber(number)}
+                      />
+                    </label>
                     <div>
                       <div className="wagon-no font-semibold">{formatWagonNumber(number)}</div>
                       {row.route_id && row.route_name ? (
-                        <button
-                          type="button"
-                          className="text-sm text-[var(--steel)]"
-                          onClick={() => onSelectRoute(row.route_id!)}
-                        >
-                          {row.route_name}
-                        </button>
+                        <p className="text-sm text-[var(--steel)]">
+                          {ru.inspector.route}: {row.route_name}
+                        </p>
                       ) : (
                         <p className="text-sm text-[var(--muted)]">{ru.inspector.noRouteForWagon}</p>
                       )}
@@ -277,15 +256,11 @@ export const TerminalListWorkboard: React.FC<Props> = ({
                   </div>
                   <WagonStatusBadge status={row.terminal_status || 'NOT_AT_TERMINAL'} />
                 </div>
-                {canSetStatus ? (
-                  <InspectorStatusButtons
-                    path={path}
-                    disabled={busyKey === String(row.id) || isSaving}
-                    onSelect={(status) => setStatus(row, status)}
-                  />
-                ) : (
-                  <p className="text-sm text-[var(--muted)]">{ru.inspector.bindRouteHint}</p>
-                )}
+                <InspectorStatusButtons
+                  path={path}
+                  disabled={busyKey === String(row.id) || isSaving}
+                  onSelect={(status) => setStatus(row, status)}
+                />
               </li>
             );
           })}

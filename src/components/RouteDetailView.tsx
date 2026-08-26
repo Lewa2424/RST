@@ -5,7 +5,6 @@ import { ru } from '../i18n/ru';
 import { RouteStatusBadge, WagonStatusBadge } from './StatusBadge';
 import { formatWagonNumber, suggestCorrectedWagonNumber } from '../../server/wagonUtils';
 import { resolveInspectorPath } from '../../server/inspectorStatus';
-import { InspectorStatusButtons } from './InspectorStatusPath';
 
 function WagonNumberCell({ number, checksumOk }: { number: string; checksumOk: boolean }) {
   const suggested = !checksumOk ? suggestCorrectedWagonNumber(number) : null;
@@ -199,7 +198,6 @@ export const RouteDetailView: React.FC<Props> = ({
                 <button type="button" className="btn btn-ghost tap" aria-label={ru.actions.edit} onClick={() => onEditWagonRow(w)}><Pencil className="w-4 h-4" /></button>
               </div>
               <WagonStatusBadge status={w.terminal_status} />
-              <InspectorStatusButtons path={wagonPath(w)} readOnly />
               <p className="text-sm">{ru.route.declared}: {w.declared_weight_kg ? `${w.declared_weight_kg.toLocaleString('ru-RU')} кг` : '—'} · {ru.route.terminal}: {w.terminal_weight_kg ? `${w.terminal_weight_kg.toLocaleString('ru-RU')} кг` : '—'}</p>
               <div className="text-sm">{wagonMatchLabel(w)}</div>
             </article>
@@ -229,10 +227,7 @@ export const RouteDetailView: React.FC<Props> = ({
                   <td>{w.declared_weight_kg ? `${w.declared_weight_kg.toLocaleString('ru-RU')} кг` : '—'}</td>
                   <td>{w.terminal_weight_kg ? `${w.terminal_weight_kg.toLocaleString('ru-RU')} кг` : '—'}</td>
                   <td>
-                    <div className="space-y-2 py-2">
-                      <WagonStatusBadge status={w.terminal_status} />
-                      <InspectorStatusButtons path={wagonPath(w)} readOnly />
-                    </div>
+                    <WagonStatusBadge status={w.terminal_status} />
                   </td>
                   <td>{wagonMatchLabel(w)}</td>
                   <td><button type="button" className="btn btn-ghost tap" aria-label={ru.actions.edit} onClick={() => onEditWagonRow(w)}><Pencil className="w-4 h-4" /></button></td>

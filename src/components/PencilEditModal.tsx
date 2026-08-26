@@ -122,7 +122,7 @@ export const PencilEditModal: React.FC<Props> = ({
               onSave({
                 parsed_wagon_number: wagonNumber.trim(),
                 weight_kg: weightKg.trim() ? Number(weightKg.trim()) : null,
-                terminal_status: terminalStatus,
+                ...(initialStatus !== undefined ? { terminal_status: terminalStatus } : {}),
                 notes,
                 is_checksum_valid: checksum?.isValid !== false,
               })
