@@ -7,6 +7,7 @@ export type AppTab = 'home' | 'routes' | 'search' | 'archive' | 'references' | '
 interface HeaderProps {
   activeTab: AppTab;
   setActiveTab: (tab: AppTab) => void;
+  onGoHome: () => void;
   onOpenCreateRoute: () => void;
   searchQuery: string;
   setSearchQuery: (q: string) => void;
@@ -16,6 +17,7 @@ interface HeaderProps {
 export const Header: React.FC<HeaderProps> = ({
   activeTab,
   setActiveTab,
+  onGoHome,
   onOpenCreateRoute,
   searchQuery,
   setSearchQuery,
@@ -45,8 +47,11 @@ export const Header: React.FC<HeaderProps> = ({
     <button
       type="button"
       onClick={() => {
-        setActiveTab(tab);
-        setOpen(false);
+        if (tab === 'home') onGoHome();
+        else {
+          setActiveTab(tab);
+          setOpen(false);
+        }
       }}
       className={`btn tap shrink-0 ${activeTab === tab ? 'btn-primary' : 'btn-ghost'}`}
       aria-current={activeTab === tab ? 'page' : undefined}
@@ -58,7 +63,7 @@ export const Header: React.FC<HeaderProps> = ({
   return (
     <header className="sticky top-0 z-40 border-b border-[var(--line)] bg-[var(--panel)]/95 backdrop-blur">
       <div className="max-w-6xl mx-auto px-4 py-3 flex items-center gap-3">
-        <button type="button" className="flex items-center gap-2 min-h-[44px] rounded-xl px-1.5 -ml-1 transition-colors hover:bg-[var(--steel-soft)]" onClick={() => setActiveTab('home')} aria-label={ru.appName}>
+        <button type="button" className="flex items-center gap-2 min-h-[44px] rounded-xl px-1.5 -ml-1 transition-colors hover:bg-[var(--steel-soft)]" onClick={onGoHome} aria-label={ru.appName}>
           <span className="w-10 h-10 rounded-xl bg-[var(--steel-soft)] text-[var(--steel)] flex items-center justify-center">
             <Train className="w-5 h-5" aria-hidden="true" />
           </span>

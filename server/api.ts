@@ -106,7 +106,9 @@ export async function createApiApp(): Promise<express.Express> {
       `SELECT r.product_type_id, COUNT(d.id) as count
        FROM discrepancies d
        JOIN routes r ON r.id = d.route_id
-       WHERE d.status = 'OPEN' AND r.status != 'ARCHIVED'
+       WHERE d.status = 'OPEN'
+         AND r.status != 'ARCHIVED'
+         AND d.type NOT IN ('MISSING_IN_TERMINAL_LIST', 'EXTRA_IN_TERMINAL_LIST', 'WEIGHT_MISMATCH')
        GROUP BY r.product_type_id`,
     );
     const routeMap = new Map(routeAgg.map((r) => [r.product_type_id, r]));
@@ -400,8 +402,33 @@ export async function createApiApp(): Promise<express.Express> {
     let healed = false;
     await transaction(async () => {
       for (const item of items) {
-        // Lightweight counter sync only — full reconcile on list save / route open.
-        if (await syncRouteProgressIfStale(Number(item.id))) healed = true;
+        if (await syncRouteProgressIfStale(Number(item.id))) {
+          healed = true;
+          continue;
+        }
+        const status = String(item.status || '');
+        const processed = Number(item.processed_count || 0);
+        // Only full-reconcile routes that still show 0 but already have wagons in confirmed lists.
+        if (
+          processed === 0 &&
+          ['ACTIVE', 'PARTIAL', 'HAS_DISCREPANCIES'].includes(status)
+        ) {
+          const needs = await queryOne<{ ok: number }>(
+            `SELECT 1 as ok
+             FROM route_wagons rw
+             JOIN terminal_list_rows tlr ON tlr.wagon_id = rw.wagon_id
+             JOIN terminal_lists tl ON tl.id = tlr.terminal_list_id
+             WHERE rw.route_id = ?
+               AND tl.status = 'CONFIRMED'
+               AND tl.product_type_id = ?
+             LIMIT 1`,
+            [item.id, item.product_type_id],
+          );
+          if (needs) {
+            await reconcileRoute(Number(item.id));
+            healed = true;
+          }
+        }
       }
     });
     if (healed) {

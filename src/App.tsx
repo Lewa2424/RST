@@ -15,6 +15,7 @@ import { EditRouteModal } from './components/EditRouteModal';
 import { RouteListTable } from './components/RouteListTable';
 import { ru } from './i18n/ru';
 import { api, asItems, ApiError } from './api';
+import { LoadingOverlay } from './components/LoadingState';
 
 export function App() {
   const [activeTab, setActiveTab] = useState<AppTab>('home');
@@ -32,6 +33,7 @@ export function App() {
   const [searching, setSearching] = useState(false);
   const [loadingTypes, setLoadingTypes] = useState(true);
   const [loadingRoutes, setLoadingRoutes] = useState(false);
+  const [loadingRouteDetail, setLoadingRouteDetail] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -82,11 +84,22 @@ export function App() {
   useEffect(() => { fetchRoutes(); }, [selectedProductType, selectedStationId]);
 
   const fetchRouteDetail = async (routeId: number) => {
+    setLoadingRouteDetail(true);
+    setError(null);
     try {
       setSelectedRouteDetail(await api(`/api/routes/${routeId}`));
     } catch (err) {
       setError(err instanceof ApiError ? err.message : ru.errors.generic);
+    } finally {
+      setLoadingRouteDetail(false);
     }
+  };
+
+  const goHome = () => {
+    setActiveTab('home');
+    setSelectedProductType(null);
+    setSelectedStationId(null);
+    setSelectedRouteDetail(null);
   };
 
   const handlePerformSearch = async () => {
@@ -115,7 +128,12 @@ export function App() {
         setActiveTab={(tab) => {
           setActiveTab(tab);
           setSelectedRouteDetail(null);
+          if (tab === 'home') {
+            setSelectedProductType(null);
+            setSelectedStationId(null);
+          }
         }}
+        onGoHome={goHome}
         onOpenCreateRoute={() => {
           setAppendWagonsRouteId(null);
           setIsCreateRouteOpen(true);
@@ -125,7 +143,8 @@ export function App() {
         onPerformSearch={handlePerformSearch}
       />
 
-      <main className="flex-1 max-w-6xl w-full mx-auto px-4 py-6">
+      <main className="flex-1 max-w-6xl w-full mx-auto px-4 py-6 relative">
+        {loadingRouteDetail && <LoadingOverlay label={ru.loading.route} />}
         {error && <div className="badge badge-err p-3 mb-4 w-full justify-start">{error}<button className="ml-auto" type="button" onClick={() => setError(null)}>×</button></div>}
 
         {selectedRouteDetail ? (
