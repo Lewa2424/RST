@@ -6,7 +6,10 @@ import {
   archiveRoute,
   createRouteRecord,
   createTerminalListRecord,
+  deleteRouteRecord,
+  deleteRouteWagonRecord,
   deleteTerminalListRecord,
+  deleteTerminalListRowRecord,
   getTerminalListDetail,
   parseStatusFilter,
   unarchiveRoute,
@@ -629,5 +632,126 @@ describe('terminal list maintenance', () => {
     expect(JSON.parse(rw.inspector_statuses)).toEqual(['AT_TERMINAL', 'UNLOADED', 'CLEANED']);
     expect(rw.terminal_status).toBe('CLEANED');
     expect(rw.processed_for_route).toBe(1);
+  });
+});
+
+describe('delete route, wagon and list row', () => {
+  it('deletes a wagon from route and reconciles counts', async () => {
+    await setup();
+    const w1 = makeValidWagonNumber('6113607');
+    const w2 = makeValidWagonNumber('5321045');
+    const route = await transaction(async () =>
+      createRouteRecord({
+        display_name: 'Удаление вагона',
+        product_type_id: 1,
+        station_id: 1,
+        wagons: [
+          { parsed_wagon_number: w1, weight_kg: 68000 },
+          { parsed_wagon_number: w2, weight_kg: 69000 },
+        ],
+      }),
+    );
+    const routeId = Number(route.id);
+    const wagons = await query<{ id: number; wagon_number: string }>(
+      `SELECT rw.id, w.wagon_number
+       FROM route_wagons rw
+       JOIN wagons w ON w.id = rw.wagon_id
+       WHERE rw.route_id = ?
+       ORDER BY rw.sequence_no`,
+      [routeId],
+    );
+    expect(wagons.length).toBe(2);
+
+    await transaction(async () => deleteRouteWagonRecord(routeId, wagons[0].id));
+
+    const left = await query<{ wagon_number: string }>(
+      `SELECT w.wagon_number
+       FROM route_wagons rw
+       JOIN wagons w ON w.id = rw.wagon_id
+       WHERE rw.route_id = ?`,
+      [routeId],
+    );
+    expect(left.map((r) => r.wagon_number)).toEqual([w2]);
+
+    const routeRow = (
+      await query<{ wagon_count: number }>('SELECT wagon_count FROM routes WHERE id = ?', [routeId])
+    )[0];
+    expect(routeRow.wagon_count).toBe(1);
+  });
+
+  it('deletes a list row and rolls back matched route progress', async () => {
+    await setup();
+    const w1 = makeValidWagonNumber('6113607');
+    const w2 = makeValidWagonNumber('5321045');
+    const route = await transaction(async () =>
+      createRouteRecord({
+        display_name: 'Удаление строки списка',
+        product_type_id: 1,
+        station_id: 1,
+        wagons: [
+          { parsed_wagon_number: w1, weight_kg: 68000 },
+          { parsed_wagon_number: w2, weight_kg: 69000 },
+        ],
+      }),
+    );
+    const routeId = Number(route.id);
+    const list = await transaction(async () =>
+      createTerminalListRecord({
+        product_type_id: 1,
+        operation_type: 'UNLOADING',
+        confirm_now: true,
+        rows: [
+          { parsed_wagon_number: w1, weight_kg: 68000 },
+          { parsed_wagon_number: w2, weight_kg: 69000 },
+        ],
+      }),
+    );
+    const listId = Number(list.id);
+    const detail = await getTerminalListDetail(listId);
+    const rows = detail?.rows as Array<{ id: number; parsed_wagon_number: string }>;
+    const rowToDelete = rows.find((r) => r.parsed_wagon_number === w1)!;
+
+    const before = (
+      await query<{ processed_count: number }>('SELECT processed_count FROM routes WHERE id = ?', [routeId])
+    )[0];
+    expect(before.processed_count).toBe(2);
+
+    await transaction(async () => deleteTerminalListRowRecord(listId, rowToDelete.id));
+
+    const remainingRows = await query<{ id: number }>(
+      'SELECT id FROM terminal_list_rows WHERE terminal_list_id = ?',
+      [listId],
+    );
+    expect(remainingRows.length).toBe(1);
+
+    const after = (
+      await query<{ processed_count: number; status: string }>(
+        'SELECT processed_count, status FROM routes WHERE id = ?',
+        [routeId],
+      )
+    )[0];
+    expect(after.processed_count).toBe(1);
+    expect(after.status).not.toBe('CLOSED');
+  });
+
+  it('deletes an entire route with wagons', async () => {
+    await setup();
+    const w1 = makeValidWagonNumber('6113607');
+    const route = await transaction(async () =>
+      createRouteRecord({
+        display_name: 'Удаление маршрута',
+        product_type_id: 1,
+        station_id: 1,
+        wagons: [{ parsed_wagon_number: w1, weight_kg: 68000 }],
+      }),
+    );
+    const routeId = Number(route.id);
+
+    await transaction(async () => deleteRouteRecord(routeId));
+
+    const routesLeft = await query<{ id: number }>('SELECT id FROM routes WHERE id = ?', [routeId]);
+    expect(routesLeft.length).toBe(0);
+    const wagonsLeft = await query<{ id: number }>('SELECT id FROM route_wagons WHERE route_id = ?', [routeId]);
+    expect(wagonsLeft.length).toBe(0);
   });
 });

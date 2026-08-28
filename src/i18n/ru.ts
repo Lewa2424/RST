@@ -61,6 +61,7 @@ export const ru = {
     ok: 'Контрольная цифра верна',
     error: 'Ошибка контрольной цифры',
     suggested: 'Верный номер',
+    invalidInRoute: 'Некорректный номер',
   },
   loading: {
     wait: 'Подождите',
@@ -189,6 +190,7 @@ export const ru = {
     noRouteForWagon: 'Нет в маршрутах',
     bindRouteHint: 'Номер пока не совпал с маршрутом — на прогресс маршрута не влияет, статус списка сохраняется.',
     confirmDelete: 'Удалить список «{name}»? Сверка маршрутов по номерам будет пересчитана.',
+    confirmDeleteRow: 'Удалить вагон {number} из списка? Сверка маршрутов будет пересчитана.',
     renamePrompt: 'Название списка',
     renameEmpty: 'Введите название списка',
     deleted: 'Список удалён',
@@ -217,6 +219,8 @@ export const ru = {
     confirmArchive: 'Перенести закрытый маршрут в архив?',
     confirmClose: 'Закрыть маршрут? Статус пересчитает сервер по вагонам на терминале.',
     confirmUnarchive: 'Вернуть маршрут в работу и пересчитать сверку?',
+    confirmDelete: 'Удалить маршрут «{name}» безвозвратно? Вагоны маршрута тоже будут удалены.',
+    confirmDeleteWagon: 'Удалить вагон {number} из маршрута?',
     filters: {
       all: 'Все',
       pending: 'Ожидаются',
@@ -297,6 +301,8 @@ export const ru = {
     archived: 'Маршрут в архиве',
     restored: 'Маршрут возвращён в работу',
     reconciled: 'Сверка пересчитана',
+    routeDeleted: 'Маршрут удалён',
+    wagonDeleted: 'Вагон удалён',
   },
   discrepancy: {
     MISSING_IN_TERMINAL_LIST: 'Ещё не подтверждён списком',

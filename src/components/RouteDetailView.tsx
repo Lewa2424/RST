@@ -1,10 +1,16 @@
 import React, { useState } from 'react';
 import { Route, RouteWagon, Discrepancy, TerminalList } from '../types';
-import { ArrowLeft, Plus, Pencil, Archive, RefreshCw } from 'lucide-react';
+import { ArrowLeft, Plus, Pencil, Archive, RefreshCw, Trash2 } from 'lucide-react';
 import { ru } from '../i18n/ru';
 import { RouteStatusBadge, WagonStatusBadge } from './StatusBadge';
-import { formatWagonNumber, suggestCorrectedWagonNumber } from '../../server/wagonUtils';
+import { formatWagonNumber, suggestCorrectedWagonNumber, validateWagonChecksum } from '../../server/wagonUtils';
 import { resolveInspectorPath } from '../../server/inspectorStatus';
+
+function wagonChecksumOk(number: string, storedFlag?: boolean | number | null): boolean {
+  const live = validateWagonChecksum(number);
+  if (live.normalized) return live.isValid;
+  return Boolean(storedFlag);
+}
 
 function WagonNumberCell({ number, checksumOk }: { number: string; checksumOk: boolean }) {
   const suggested = !checksumOk ? suggestCorrectedWagonNumber(number) : null;
@@ -14,11 +20,19 @@ function WagonNumberCell({ number, checksumOk }: { number: string; checksumOk: b
       ? `${ru.checksum.error}. ${ru.checksum.suggested}: ${formatWagonNumber(suggested)}`
       : ru.checksum.error;
   return (
-    <span
-      className={`wagon-no ${checksumOk ? 'wagon-no--ok' : 'wagon-no--err'}`}
-      title={title}
-    >
-      {formatWagonNumber(number)}
+    <span className="inline-flex flex-col items-start gap-0.5">
+      <span
+        className={`wagon-no ${checksumOk ? 'wagon-no--ok' : 'wagon-no--err'}`}
+        title={title}
+      >
+        {formatWagonNumber(number)}
+      </span>
+      {!checksumOk ? (
+        <span className="text-xs font-semibold text-[var(--err)]">
+          {ru.checksum.invalidInRoute}
+          {suggested ? ` · ${ru.checksum.suggested}: ${formatWagonNumber(suggested)}` : ''}
+        </span>
+      ) : null}
     </span>
   );
 }
@@ -60,12 +74,14 @@ interface Props {
   onCloseRoute: () => void;
   onArchiveRoute: () => void;
   onUnarchiveRoute: () => void;
+  onDeleteRoute: () => void;
+  onDeleteWagon: (wagon: RouteWagon) => void;
   onReconcileNow: () => void;
 }
 
 export const RouteDetailView: React.FC<Props> = ({
   route, onBack, onEditRoute, onEditWagonRow, onOpenAddWagonsModal, onOpenAddTerminalListForRoute,
-  onCloseRoute, onArchiveRoute, onUnarchiveRoute, onReconcileNow,
+  onCloseRoute, onArchiveRoute, onUnarchiveRoute, onDeleteRoute, onDeleteWagon, onReconcileNow,
 }) => {
   const [filterTab, setFilterTab] = useState('ALL');
   const openDiscrepancies = (route.discrepancies || []).filter((d) => d.status === 'OPEN');
@@ -92,7 +108,7 @@ export const RouteDetailView: React.FC<Props> = ({
     }
     if (filterTab === 'DISCREPANCIES') {
       const wagonDisc = (w.discrepancies || []).filter((d) => !TIP_DISCREPANCY_TYPES.has(d.type));
-      return wagonDisc.length > 0 || !w.is_checksum_valid;
+      return wagonDisc.length > 0 || !wagonChecksumOk(w.wagon_number, w.is_checksum_valid);
     }
     return true;
   });
@@ -109,19 +125,36 @@ export const RouteDetailView: React.FC<Props> = ({
   ];
 
   const wagonMatchLabel = (w: RouteWagon) => {
+    const checksumOk = wagonChecksumOk(w.wagon_number, w.is_checksum_valid);
     const tips = (w.discrepancies || []).filter((d) => TIP_DISCREPANCY_TYPES.has(d.type));
-    const issues = (w.discrepancies || []).filter((d) => !TIP_DISCREPANCY_TYPES.has(d.type));
-    if (issues.length > 0) {
-      return issues.map((d) => (
-        <div key={d.id} className="text-[var(--err)]">{discrepancyLabel(d)}</div>
-      ));
+    const issues = (w.discrepancies || []).filter(
+      (d) => !TIP_DISCREPANCY_TYPES.has(d.type) && d.type !== 'INVALID_CHECK_DIGIT',
+    );
+    const lines: React.ReactNode[] = [];
+
+    if (!checksumOk) {
+      const suggested = suggestCorrectedWagonNumber(w.wagon_number);
+      lines.push(
+        <div key="checksum" className="text-[var(--err)] font-semibold">
+          {ru.checksum.invalidInRoute}
+          {suggested ? ` · ${ru.checksum.suggested}: ${formatWagonNumber(suggested)}` : ''}
+        </div>,
+      );
     }
-    if (tips.length > 0) {
-      return tips.map((d) => (
-        <div key={d.id} className="text-[var(--muted)]">{discrepancyLabel(d)}</div>
-      ));
+    for (const d of issues) {
+      lines.push(
+        <div key={`issue-${d.id}`} className="text-[var(--err)]">{discrepancyLabel(d)}</div>,
+      );
     }
-    return <span className="text-[var(--ok)]">{ru.route.matches}</span>;
+    for (const d of tips) {
+      lines.push(
+        <div key={`tip-${d.id}`} className="text-[var(--muted)]">{discrepancyLabel(d)}</div>,
+      );
+    }
+    if (lines.length === 0) {
+      return <span className="text-[var(--ok)]">{ru.route.matches}</span>;
+    }
+    return <>{lines}</>;
   };
 
   return (
@@ -155,6 +188,9 @@ export const RouteDetailView: React.FC<Props> = ({
           ) : route.status === 'CLOSED' ? (
             <button type="button" className="btn btn-secondary" onClick={onArchiveRoute}><Archive className="w-4 h-4" /> {ru.actions.archive}</button>
           ) : null}
+          <button type="button" className="btn btn-ghost" onClick={onDeleteRoute}>
+            <Trash2 className="w-4 h-4" /> {ru.actions.delete}
+          </button>
         </div>
       </div>
 
@@ -194,8 +230,13 @@ export const RouteDetailView: React.FC<Props> = ({
           {filteredWagons.map((w) => (
             <article key={w.id} className="card-interactive border border-[var(--line)] rounded-xl p-3 space-y-2">
               <div className="flex justify-between gap-2">
-                <WagonNumberCell number={w.wagon_number} checksumOk={Boolean(w.is_checksum_valid)} />
-                <button type="button" className="btn btn-ghost tap" aria-label={ru.actions.edit} onClick={() => onEditWagonRow(w)}><Pencil className="w-4 h-4" /></button>
+                <WagonNumberCell number={w.wagon_number} checksumOk={wagonChecksumOk(w.wagon_number, w.is_checksum_valid)} />
+                <div className="flex gap-1">
+                  <button type="button" className="btn btn-ghost tap" aria-label={ru.actions.edit} onClick={() => onEditWagonRow(w)}><Pencil className="w-4 h-4" /></button>
+                  {route.status !== 'ARCHIVED' ? (
+                    <button type="button" className="btn btn-ghost tap" aria-label={ru.actions.delete} onClick={() => onDeleteWagon(w)}><Trash2 className="w-4 h-4" /></button>
+                  ) : null}
+                </div>
               </div>
               <WagonStatusBadge status={w.terminal_status} />
               <p className="text-sm">{ru.route.declared}: {w.declared_weight_kg ? `${w.declared_weight_kg.toLocaleString('ru-RU')} кг` : '—'} · {ru.route.terminal}: {w.terminal_weight_kg ? `${w.terminal_weight_kg.toLocaleString('ru-RU')} кг` : '—'}</p>
@@ -222,7 +263,7 @@ export const RouteDetailView: React.FC<Props> = ({
                 <tr key={w.id} className="border-b border-[var(--line)] row-interactive">
                   <td className="py-2">{w.sequence_no}</td>
                   <td>
-                    <WagonNumberCell number={w.wagon_number} checksumOk={Boolean(w.is_checksum_valid)} />
+                    <WagonNumberCell number={w.wagon_number} checksumOk={wagonChecksumOk(w.wagon_number, w.is_checksum_valid)} />
                   </td>
                   <td>{w.declared_weight_kg ? `${w.declared_weight_kg.toLocaleString('ru-RU')} кг` : '—'}</td>
                   <td>{w.terminal_weight_kg ? `${w.terminal_weight_kg.toLocaleString('ru-RU')} кг` : '—'}</td>
@@ -230,7 +271,14 @@ export const RouteDetailView: React.FC<Props> = ({
                     <WagonStatusBadge status={w.terminal_status} />
                   </td>
                   <td>{wagonMatchLabel(w)}</td>
-                  <td><button type="button" className="btn btn-ghost tap" aria-label={ru.actions.edit} onClick={() => onEditWagonRow(w)}><Pencil className="w-4 h-4" /></button></td>
+                  <td>
+                    <div className="flex gap-1 justify-end">
+                      <button type="button" className="btn btn-ghost tap" aria-label={ru.actions.edit} onClick={() => onEditWagonRow(w)}><Pencil className="w-4 h-4" /></button>
+                      {route.status !== 'ARCHIVED' ? (
+                        <button type="button" className="btn btn-ghost tap" aria-label={ru.actions.delete} onClick={() => onDeleteWagon(w)}><Trash2 className="w-4 h-4" /></button>
+                      ) : null}
+                    </div>
+                  </td>
                 </tr>
               ))}
             </tbody>

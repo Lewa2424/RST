@@ -192,6 +192,34 @@ export async function addWagonsToRoute(routeId: number, wagons: IncomingWagon[])
   return await queryOne('SELECT * FROM routes WHERE id = ?', [routeId]) as Record<string, unknown>;
 }
 
+export async function deleteRouteRecord(routeId: number): Promise<{ success: true; id: number }> {
+  const route = await queryOne<{ id: number }>('SELECT id FROM routes WHERE id = ?', [routeId]);
+  if (!route) throw new AppError(404, 'NOT_FOUND', 'Маршрут не найден');
+  await run('DELETE FROM routes WHERE id = ?', [routeId]);
+  return { success: true, id: routeId };
+}
+
+export async function deleteRouteWagonRecord(
+  routeId: number,
+  wagonKey: number,
+): Promise<{ success: true; route_id: number; id: number }> {
+  const route = await queryOne<{ id: number; status: string }>('SELECT id, status FROM routes WHERE id = ?', [routeId]);
+  if (!route) throw new AppError(404, 'NOT_FOUND', 'Маршрут не найден');
+  if (route.status === 'ARCHIVED') {
+    throw new AppError(409, 'CONFLICT', 'Сначала верните маршрут в работу');
+  }
+
+  const row = await queryOne<{ id: number }>(
+    'SELECT id FROM route_wagons WHERE route_id = ? AND (id = ? OR wagon_id = ?)',
+    [routeId, wagonKey, wagonKey],
+  );
+  if (!row) throw new AppError(404, 'NOT_FOUND', 'Вагон маршрута не найден');
+
+  await run('DELETE FROM route_wagons WHERE id = ?', [row.id]);
+  await reconcileRoute(routeId);
+  return { success: true, route_id: routeId, id: row.id };
+}
+
 export async function archiveRoute(routeId: number): Promise<{ success: true; status: 'ARCHIVED' }> {
   const route = await queryOne<{ status: string }>('SELECT status FROM routes WHERE id = ?', [routeId]);
   if (!route) throw new AppError(404, 'NOT_FOUND', 'Маршрут не найден');
@@ -714,6 +742,52 @@ export async function updateTerminalListRecord(
   const now = nowIso();
   await run('UPDATE terminal_lists SET display_name = ?, updated_at = ? WHERE id = ?', [name, now, listId]);
   return (await queryOne('SELECT * FROM terminal_lists WHERE id = ?', [listId])) as Record<string, unknown>;
+}
+
+export async function deleteTerminalListRowRecord(
+  listId: number,
+  rowId: number,
+): Promise<{ success: true; id: number; terminal_list_id: number; touched_route_ids: number[] }> {
+  const list = await queryOne<{ id: number; product_type_id: number }>(
+    'SELECT id, product_type_id FROM terminal_lists WHERE id = ?',
+    [listId],
+  );
+  if (!list) throw new AppError(404, 'NOT_FOUND', 'Список терминала не найден');
+
+  const row = await queryOne<{ id: number; parsed_wagon_number: string | null }>(
+    'SELECT id, parsed_wagon_number FROM terminal_list_rows WHERE id = ? AND terminal_list_id = ?',
+    [rowId, listId],
+  );
+  if (!row) throw new AppError(404, 'NOT_FOUND', 'Строка списка не найдена');
+
+  const targetDigits = String(row.parsed_wagon_number || '').replace(/\D/g, '');
+  const routeIds = new Set<number>();
+  if (targetDigits) {
+    const routeWagons = await query<{ route_id: number; wagon_number: string }>(
+      `SELECT r.id as route_id, w.wagon_number
+       FROM routes r
+       JOIN route_wagons rw ON rw.route_id = r.id
+       JOIN wagons w ON w.id = rw.wagon_id
+       WHERE r.product_type_id = ?
+         AND r.status IN ('ACTIVE', 'PARTIAL', 'HAS_DISCREPANCIES', 'CLOSED')`,
+      [list.product_type_id],
+    );
+    for (const candidate of routeWagons) {
+      const d = String(candidate.wagon_number || '').replace(/\D/g, '');
+      if (d && d === targetDigits) routeIds.add(candidate.route_id);
+    }
+  }
+
+  await run('DELETE FROM terminal_list_rows WHERE id = ?', [row.id]);
+  for (const routeId of routeIds) {
+    await reconcileRoute(routeId);
+  }
+  return {
+    success: true,
+    id: row.id,
+    terminal_list_id: listId,
+    touched_route_ids: [...routeIds],
+  };
 }
 
 export async function deleteTerminalListRecord(

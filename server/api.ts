@@ -20,7 +20,10 @@ import {
   createImportSession,
   createRouteRecord,
   createTerminalListRecord,
+  deleteRouteRecord,
+  deleteRouteWagonRecord,
   deleteTerminalListRecord,
+  deleteTerminalListRowRecord,
   getTerminalListDetail,
   matchRouteCandidates,
   updateRouteWagonRecord,
@@ -638,6 +641,25 @@ export async function createApiApp(): Promise<express.Express> {
     }),
   );
 
+  app.delete(
+    '/api/routes/:id/wagons/:wagonId',
+    asyncHandler(async (req, res) => {
+      const { id, wagonId } = req.params;
+      const result = await transaction(async () =>
+        await deleteRouteWagonRecord(Number(id), Number(wagonId)),
+      );
+      res.json(result);
+    }),
+  );
+
+  app.delete(
+    '/api/routes/:id',
+    asyncHandler(async (req, res) => {
+      const result = await transaction(async () => await deleteRouteRecord(Number(req.params.id)));
+      res.json(result);
+    }),
+  );
+
   app.post(
     '/api/inspector/wagon-status',
     asyncHandler(async (req, res) => {
@@ -805,6 +827,20 @@ export async function createApiApp(): Promise<express.Express> {
         await updateTerminalListRecord(Number(req.params.id), { display_name: displayName }),
       );
       res.json(updated);
+    }),
+  );
+
+  app.delete(
+    '/api/terminal-lists/:id/rows/:rowId',
+    asyncHandler(async (req, res) => {
+      const result = await transaction(async () =>
+        await deleteTerminalListRowRecord(Number(req.params.id), Number(req.params.rowId)),
+      );
+      res.json({
+        success: result.success,
+        id: result.id,
+        terminal_list_id: result.terminal_list_id,
+      });
     }),
   );
 

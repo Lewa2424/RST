@@ -16,6 +16,7 @@ import { RouteListTable } from './components/RouteListTable';
 import { ru } from './i18n/ru';
 import { api, asItems, ApiError } from './api';
 import { LoadingOverlay } from './components/LoadingState';
+import { formatWagonNumber } from '../server/wagonUtils';
 
 export function App() {
   const [activeTab, setActiveTab] = useState<AppTab>('home');
@@ -184,6 +185,34 @@ export function App() {
               try {
                 await api(`/api/routes/${selectedRouteDetail.id}/unarchive`, { method: 'POST' });
                 showToast(ru.toast.restored);
+                refreshAll();
+              } catch (err) {
+                setError(err instanceof ApiError ? err.message : ru.errors.generic);
+              }
+            }}
+            onDeleteRoute={async () => {
+              if (!confirm(ru.route.confirmDelete.replace('{name}', selectedRouteDetail.display_name))) return;
+              try {
+                await api(`/api/routes/${selectedRouteDetail.id}`, { method: 'DELETE' });
+                showToast(ru.toast.routeDeleted);
+                setSelectedRouteDetail(null);
+                refreshAll();
+              } catch (err) {
+                setError(err instanceof ApiError ? err.message : ru.errors.generic);
+              }
+            }}
+            onDeleteWagon={async (wagon) => {
+              if (
+                !confirm(
+                  ru.route.confirmDeleteWagon.replace('{number}', formatWagonNumber(wagon.wagon_number)),
+                )
+              ) {
+                return;
+              }
+              try {
+                await api(`/api/routes/${selectedRouteDetail.id}/wagons/${wagon.id}`, { method: 'DELETE' });
+                showToast(ru.toast.wagonDeleted);
+                await fetchRouteDetail(selectedRouteDetail.id);
                 refreshAll();
               } catch (err) {
                 setError(err instanceof ApiError ? err.message : ru.errors.generic);

@@ -135,6 +135,36 @@ export const TerminalListWorkboard: React.FC<Props> = ({
     }
   };
 
+  const deleteRow = async (row: TerminalListWorkboardRow) => {
+    const number = row.parsed_wagon_number || row.raw_wagon_number || String(row.id);
+    if (
+      !confirm(
+        ru.inspector.confirmDeleteRow.replace('{number}', formatWagonNumber(number)),
+      )
+    ) {
+      return;
+    }
+    setBusyKey(String(row.id));
+    setIsSaving(true);
+    setError(null);
+    try {
+      await api(`/api/terminal-lists/${list.id}/rows/${row.id}`, { method: 'DELETE' });
+      setRows((prev) => prev.filter((r) => r.id !== row.id));
+      setSelected((prev) => {
+        const next = new Set(prev);
+        next.delete(row.id);
+        return next;
+      });
+      onStatusChanged();
+      await onReload();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : ru.errors.generic);
+    } finally {
+      setBusyKey(null);
+      setIsSaving(false);
+    }
+  };
+
   const toggleOne = (id: number) => {
     setSelected((prev) => {
       const next = new Set(prev);
@@ -254,7 +284,18 @@ export const TerminalListWorkboard: React.FC<Props> = ({
                       )}
                     </div>
                   </div>
-                  <WagonStatusBadge status={row.terminal_status || 'NOT_AT_TERMINAL'} />
+                  <div className="flex items-center gap-1">
+                    <WagonStatusBadge status={row.terminal_status || 'NOT_AT_TERMINAL'} />
+                    <button
+                      type="button"
+                      className="btn btn-ghost tap"
+                      aria-label={ru.actions.delete}
+                      disabled={busyKey === String(row.id) || isSaving || actionBusy}
+                      onClick={() => deleteRow(row)}
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
                 </div>
                 <InspectorStatusButtons
                   path={path}
