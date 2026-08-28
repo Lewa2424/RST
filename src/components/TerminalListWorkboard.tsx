@@ -8,6 +8,7 @@ import { resolveInspectorPath } from '../../server/inspectorStatus';
 import { WagonStatusBadge } from './StatusBadge';
 import { LoadingOverlay } from './LoadingState';
 import { InspectorBatchBar, InspectorStatusButtons } from './InspectorStatusPath';
+import { PencilEditModal } from './PencilEditModal';
 
 interface ListDetail extends TerminalList {
   rows: TerminalListWorkboardRow[];
@@ -50,12 +51,14 @@ export const TerminalListWorkboard: React.FC<Props> = ({
   const [isRenaming, setIsRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState(list.display_name || `#${list.id}`);
   const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [editingRow, setEditingRow] = useState<TerminalListWorkboardRow | null>(null);
 
   React.useEffect(() => {
     setRows(list.rows);
     setRenameValue(list.display_name || `#${list.id}`);
     setIsRenaming(false);
     setSelected(new Set());
+    setEditingRow(null);
   }, [list]);
 
   const selectableIds = useMemo(() => rows.map((row) => row.id), [rows]);
@@ -131,6 +134,34 @@ export const TerminalListWorkboard: React.FC<Props> = ({
     } catch (err) {
       setError(err instanceof ApiError ? err.message : ru.errors.generic);
     } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const saveRowEdit = async (data: {
+    parsed_wagon_number: string;
+    weight_kg: number | null;
+  }) => {
+    if (!editingRow) return;
+    setBusyKey(String(editingRow.id));
+    setIsSaving(true);
+    setError(null);
+    try {
+      await api(`/api/terminal-list-rows/${editingRow.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          wagon_number: data.parsed_wagon_number,
+          weight_kg: data.weight_kg,
+        }),
+      });
+      setEditingRow(null);
+      onStatusChanged();
+      await onReload();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : ru.errors.generic);
+    } finally {
+      setBusyKey(null);
       setIsSaving(false);
     }
   };
@@ -289,6 +320,15 @@ export const TerminalListWorkboard: React.FC<Props> = ({
                     <button
                       type="button"
                       className="btn btn-ghost tap"
+                      aria-label={ru.actions.edit}
+                      disabled={busyKey === String(row.id) || isSaving || actionBusy}
+                      onClick={() => setEditingRow(row)}
+                    >
+                      <Pencil className="w-4 h-4" />
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-ghost tap"
                       aria-label={ru.actions.delete}
                       disabled={busyKey === String(row.id) || isSaving || actionBusy}
                       onClick={() => deleteRow(row)}
@@ -307,6 +347,19 @@ export const TerminalListWorkboard: React.FC<Props> = ({
           })}
         </ul>
       </div>
+
+      <PencilEditModal
+        isOpen={!!editingRow}
+        onClose={() => setEditingRow(null)}
+        wagonNumber={editingRow?.parsed_wagon_number || editingRow?.raw_wagon_number || ''}
+        weightKg={editingRow?.weight_kg}
+        onSave={(data) => {
+          void saveRowEdit({
+            parsed_wagon_number: data.parsed_wagon_number,
+            weight_kg: data.weight_kg,
+          });
+        }}
+      />
     </div>
   );
 };

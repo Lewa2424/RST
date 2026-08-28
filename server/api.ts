@@ -28,6 +28,7 @@ import {
   matchRouteCandidates,
   updateRouteWagonRecord,
   updateTerminalListRecord,
+  updateTerminalListRowRecord,
   updateTerminalListRowStatus,
   unarchiveRoute,
   pagination,
@@ -684,6 +685,20 @@ export async function createApiApp(): Promise<express.Express> {
         await updateTerminalListRowStatus(Number(req.params.id), status),
       );
       res.json({ success: true, ...result });
+    }),
+  );
+
+  app.put(
+    '/api/terminal-list-rows/:id',
+    asyncHandler(async (req, res) => {
+      const weightRaw = req.body?.weight_kg;
+      const result = await transaction(async () =>
+        await updateTerminalListRowRecord(Number(req.params.id), {
+          wagon_number: req.body?.wagon_number != null ? String(req.body.wagon_number) : undefined,
+          weight_kg: weightRaw === undefined ? undefined : weightRaw == null ? null : Number(weightRaw),
+        }),
+      );
+      res.json(result);
     }),
   );
 

@@ -14,6 +14,7 @@ import {
   parseStatusFilter,
   unarchiveRoute,
   updateTerminalListRecord,
+  updateTerminalListRowRecord,
   updateTerminalListRowStatus,
 } from '../server/domain';
 import { makeValidWagonNumber } from '../server/wagonUtils';
@@ -753,5 +754,47 @@ describe('delete route, wagon and list row', () => {
     expect(routesLeft.length).toBe(0);
     const wagonsLeft = await query<{ id: number }>('SELECT id FROM route_wagons WHERE route_id = ?', [routeId]);
     expect(wagonsLeft.length).toBe(0);
+  });
+
+  it('updates list row wagon number and reconciles matched route', async () => {
+    await setup();
+    const correct = makeValidWagonNumber('5948148');
+    const wrong = `6${correct.slice(1)}`;
+    expect(wrong).not.toBe(correct);
+
+    const route = await transaction(async () =>
+      createRouteRecord({
+        display_name: 'Правка номера в списке',
+        product_type_id: 1,
+        station_id: 1,
+        wagons: [{ parsed_wagon_number: correct, weight_kg: 68000 }],
+      }),
+    );
+    const routeId = Number(route.id);
+    const list = await transaction(async () =>
+      createTerminalListRecord({
+        product_type_id: 1,
+        operation_type: 'UNLOADING',
+        confirm_now: true,
+        rows: [{ parsed_wagon_number: wrong, weight_kg: 68000 }],
+      }),
+    );
+    const detail = await getTerminalListDetail(Number(list.id));
+    const row = (detail?.rows as Array<{ id: number; route_id: number | null }>)[0];
+    expect(row.route_id).toBeNull();
+
+    await transaction(async () =>
+      updateTerminalListRowRecord(row.id, { wagon_number: correct }),
+    );
+
+    const refreshed = await getTerminalListDetail(Number(list.id));
+    const updated = (refreshed?.rows as Array<{ route_id: number | null; parsed_wagon_number: string }>)[0];
+    expect(updated.parsed_wagon_number).toBe(correct);
+    expect(updated.route_id).toBe(routeId);
+
+    const routeRow = (
+      await query<{ processed_count: number }>('SELECT processed_count FROM routes WHERE id = ?', [routeId])
+    )[0];
+    expect(routeRow.processed_count).toBe(1);
   });
 });

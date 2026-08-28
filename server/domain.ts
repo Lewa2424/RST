@@ -479,6 +479,148 @@ export async function applyTerminalListRowStatusBatch(
   return { applied, count: applied.length };
 }
 
+async function routeIdsMatchingWagonDigits(
+  productTypeId: number,
+  digits: string,
+): Promise<number[]> {
+  if (!digits) return [];
+  const routeWagons = await query<{ route_id: number; wagon_number: string }>(
+    `SELECT r.id as route_id, w.wagon_number
+     FROM routes r
+     JOIN route_wagons rw ON rw.route_id = r.id
+     JOIN wagons w ON w.id = rw.wagon_id
+     WHERE r.product_type_id = ?
+       AND r.status IN ('ACTIVE', 'PARTIAL', 'HAS_DISCREPANCIES', 'CLOSED')`,
+    [productTypeId],
+  );
+  const ids: number[] = [];
+  for (const candidate of routeWagons) {
+    const d = String(candidate.wagon_number || '').replace(/\D/g, '');
+    if (d && d === digits) ids.push(candidate.route_id);
+  }
+  return ids;
+}
+
+export async function updateTerminalListRowRecord(
+  listRowId: number,
+  input: {
+    wagon_number?: string;
+    weight_kg?: number | null;
+  },
+): Promise<{
+  success: true;
+  id: number;
+  terminal_list_id: number;
+  parsed_wagon_number: string | null;
+  weight_kg: number | null;
+  touched_route_ids: number[];
+}> {
+  const row = await queryOne<{
+    id: number;
+    terminal_list_id: number;
+    parsed_wagon_number: string | null;
+    raw_wagon_number: string;
+    weight_kg: number | null;
+    row_status: string;
+  }>(
+    `SELECT id, terminal_list_id, parsed_wagon_number, raw_wagon_number, weight_kg, row_status
+     FROM terminal_list_rows WHERE id = ?`,
+    [listRowId],
+  );
+  if (!row) throw new AppError(404, 'NOT_FOUND', 'Строка списка не найдена');
+
+  const list = await queryOne<{ id: number; product_type_id: number; status: string }>(
+    'SELECT id, product_type_id, status FROM terminal_lists WHERE id = ?',
+    [row.terminal_list_id],
+  );
+  if (!list) throw new AppError(404, 'NOT_FOUND', 'Список терминала не найден');
+
+  if (input.wagon_number === undefined && input.weight_kg === undefined) {
+    throw new AppError(400, 'VALIDATION_ERROR', 'Нечего обновлять');
+  }
+
+  const now = nowIso();
+  const routeIds = new Set<number>();
+  for (const id of await routeIdsMatchingWagonDigits(
+    list.product_type_id,
+    String(row.parsed_wagon_number || '').replace(/\D/g, ''),
+  )) {
+    routeIds.add(id);
+  }
+
+  let parsed = row.parsed_wagon_number;
+  let raw = row.raw_wagon_number;
+  let checksumValid: number | null = null;
+  let wagonId: number | null = null;
+  let rowStatus = row.row_status;
+
+  if (input.wagon_number !== undefined) {
+    raw = input.wagon_number.trim();
+    if (!raw) throw new AppError(400, 'VALIDATION_ERROR', 'Номер вагона пуст');
+
+    const check = validateWagonChecksum(raw);
+    const stored = isStoredWagonNumber(check.normalized);
+    if (!stored) {
+      throw new AppError(400, 'VALIDATION_ERROR', check.errorReason || 'Неверный номер вагона');
+    }
+
+    const dup = await queryOne(
+      'SELECT id FROM terminal_list_rows WHERE terminal_list_id = ? AND parsed_wagon_number = ? AND id != ?',
+      [row.terminal_list_id, check.normalized, row.id],
+    );
+    if (dup) throw new AppError(409, 'CONFLICT', 'Такой вагон уже есть в списке');
+
+    parsed = check.normalized;
+    checksumValid = check.isValid ? 1 : 0;
+    const created = await getOrCreateWagon(check.normalized, now);
+    wagonId = created?.id ?? null;
+
+    if (!check.isValid) rowStatus = 'INVALID_NUMBER';
+    else if (list.status === 'CONFIRMED') rowStatus = 'CONFIRMED';
+    else rowStatus = 'VALID';
+
+    for (const id of await routeIdsMatchingWagonDigits(list.product_type_id, check.normalized)) {
+      routeIds.add(id);
+    }
+  }
+
+  const weight = input.weight_kg !== undefined ? input.weight_kg : row.weight_kg;
+
+  if (input.wagon_number !== undefined) {
+    await run(
+      `UPDATE terminal_list_rows
+       SET raw_wagon_number = ?, parsed_wagon_number = ?, checksum_valid = ?, wagon_id = ?,
+           weight_kg = ?, row_status = ?
+       WHERE id = ?`,
+      [raw, parsed, checksumValid, wagonId, weight ?? null, rowStatus, row.id],
+    );
+  } else {
+    await run('UPDATE terminal_list_rows SET weight_kg = ? WHERE id = ?', [weight ?? null, row.id]);
+    if (parsed) {
+      for (const id of await routeIdsMatchingWagonDigits(
+        list.product_type_id,
+        String(parsed).replace(/\D/g, ''),
+      )) {
+        routeIds.add(id);
+      }
+    }
+  }
+
+  for (const routeId of routeIds) {
+    await reconcileRoute(routeId);
+  }
+  await reconcileRoutesTouchedByList(row.terminal_list_id);
+
+  return {
+    success: true,
+    id: row.id,
+    terminal_list_id: row.terminal_list_id,
+    parsed_wagon_number: parsed,
+    weight_kg: weight ?? null,
+    touched_route_ids: [...routeIds],
+  };
+}
+
 export async function createTerminalListRecord(input: {
   route_id?: number | null;
   product_type_id: number;
@@ -761,22 +903,7 @@ export async function deleteTerminalListRowRecord(
   if (!row) throw new AppError(404, 'NOT_FOUND', 'Строка списка не найдена');
 
   const targetDigits = String(row.parsed_wagon_number || '').replace(/\D/g, '');
-  const routeIds = new Set<number>();
-  if (targetDigits) {
-    const routeWagons = await query<{ route_id: number; wagon_number: string }>(
-      `SELECT r.id as route_id, w.wagon_number
-       FROM routes r
-       JOIN route_wagons rw ON rw.route_id = r.id
-       JOIN wagons w ON w.id = rw.wagon_id
-       WHERE r.product_type_id = ?
-         AND r.status IN ('ACTIVE', 'PARTIAL', 'HAS_DISCREPANCIES', 'CLOSED')`,
-      [list.product_type_id],
-    );
-    for (const candidate of routeWagons) {
-      const d = String(candidate.wagon_number || '').replace(/\D/g, '');
-      if (d && d === targetDigits) routeIds.add(candidate.route_id);
-    }
-  }
+  const routeIds = new Set(await routeIdsMatchingWagonDigits(list.product_type_id, targetDigits));
 
   await run('DELETE FROM terminal_list_rows WHERE id = ?', [row.id]);
   for (const routeId of routeIds) {
